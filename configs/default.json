@@ -1,0 +1,26 @@
+{
+  "time_limit_s": 300,
+  "mip_gap": 0.001,
+  "max_nodes": 300,
+  "max_cg_iters": 120,
+  "max_new_columns_per_iter": 20,
+  "pricing_rc_epsilon": 1e-6,
+  "ng_size": 10,
+  "k_cycle": 2,
+  "cut_violation_tol": 1e-6,
+  "max_cuts_per_round": 20,
+  "cut_rounds_root": 3,
+  "cut_rounds_node": 1,
+  "branch_strategy": "best_bound",
+  "random_seed": 42,
+  "enable_rcc": true,
+  "enable_clique": true,
+  "enable_sri": true,
+  "enable_stabilization": true,
+  "stabilization": {
+    "method": "box",
+    "box_width": 2.0,
+    "penalty_weight": 0.0,
+    "hybrid_switch_iter": 25
+  }
+}

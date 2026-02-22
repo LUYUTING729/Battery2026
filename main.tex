@@ -1,0 +1,713 @@
+\documentclass{article}
+\usepackage{graphicx} % Required for inserting images
+\usepackage{amsmath}
+\usepackage{ctex} 
+\title{Battery swap}
+\author{雨婷 陆}
+\date{December 2025}
+
+\begin{document}
+
+
+\section{运营阶段：多中心车辆调度与路径优化模型（SCF 强模型）}
+\label{sec:stage2_operational_scf}
+
+本节构建运营阶段（Operational Stage）的精确优化模型。在战略阶段已确定开放的中心/充电站集合后，运营阶段需要决定：每辆车从哪个中心出发（可不出车），以及车辆的服务路径，使得所有客户被恰好服务一次，并满足车辆容量与续航（里程/能耗）限制，同时最小化路线行驶成本与车辆从初始位置调度至中心的切换成本。
+
+\subsection{问题描述}
+设系统中存在一组已开放中心（亦可理解为配送中心/充电站）以及一组客户需求点。每辆车在运营开始时位于一个初始位置，若车辆被启用，则必须被派遣至某一开放中心并从该中心出发执行配送任务，最终回到同一中心形成闭环路线。每个客户具有确定需求量，车辆具有统一容量上限与续航上限。运营决策包括：（i）车辆-中心派遣决策；（ii）车辆路径决策；（iii）满足容量与续航的可行性约束。目标是在保证服务覆盖与可行性的前提下，最小化系统的总成本。
+
+\subsection{基本假设}
+为使模型表达清晰且与实际运营场景一致，本文采用如下假设（可根据应用场景扩展）：
+\begin{enumerate}
+    \item \textbf{中心集合已知。} 战略阶段已确定开放中心集合 $J$，运营阶段仅在这些中心上派遣车辆并构造路线。
+    \item \textbf{单次服务、不可拆分需求。} 每个客户 $i$ 的需求 $q_i$ 必须由\emph{单辆车}一次性满足，不允许拆单（split delivery）。
+    \item \textbf{车辆闭环运营。} 任一被启用车辆必须从某一中心 $j\in J$ 出发并回到同一中心结束；车辆不可在不同中心之间行驶（禁止中心到中心弧）。
+    \item \textbf{容量与续航上限。} 车辆容量上限为 $U$，续航上限为 $Q$（可解释为最大可行驶距离或最大可消耗能量），均为确定性参数。
+    \item \textbf{成本可加性与确定性。} 路径成本与调度成本均为确定性且可加：车辆行驶弧成本为 $c_{uv}$，车辆从初始位置 $p$ 调度到中心 $j$ 的成本为 $w_{pj}$。
+    \item \textbf{无时间窗（本节）。} 本节不考虑时间窗与服务时间；若需扩展，可在续航势能变量基础上引入到达时间变量并添加时间窗约束。
+\end{enumerate}
+
+\subsection{集合与弧集}
+\begin{itemize}
+    \item $I$：客户集合，索引 $i$。
+    \item $J$：开放中心（充电站/配送中心）集合，索引 $j$。
+    \item $P$：车辆初始位置集合，索引 $p$。
+    \item $\mathcal{K}$：车辆集合，索引 $k$。
+    \item $V := I \cup J$：运营路径网络中的全部节点集合。
+    \item $A \subseteq V\times V$：允许弧集。为符合闭环与中心运营机制，禁止自环与中心到中心弧：
+    \[
+    A := \{(u,v)\in V\times V:\ u\neq v,\ \neg(u\in J \wedge v\in J)\}.
+    \]
+\end{itemize}
+
+\subsection{参数定义}
+\begin{itemize}
+    \item $q_i$：客户 $i\in I$ 的需求量。
+    \item $U$：车辆容量上限。
+    \item $Q$：车辆续航上限（最大距离/最大能耗）。
+    \item $c_{uv}$：车辆在弧 $(u,v)\in A$ 上的行驶成本。
+    \item $d_{uv}$：车辆在弧 $(u,v)\in A$ 上的行驶距离/能耗。
+    \item $w_{pj}$：车辆从初始位置 $p\in P$ 调度至中心 $j\in J$ 的切换成本。
+    \item $\mathrm{orig}(k)\in P$：车辆 $k$ 的初始位置。
+    \item $K^{\max}_j$：中心 $j$ 最大可派出车辆数（车辆出车能力或充电口数量等）。
+\end{itemize}
+
+\subsection{决策变量定义}
+\begin{itemize}
+    \item $x_{uv}^k\in\{0,1\}$：若车辆 $k$ 行驶弧 $(u,v)\in A$ 则为 1，否则为 0。
+    \item $z_{kj}\in\{0,1\}$：若车辆 $k$ 被派遣从中心 $j$ 出发（并回到该中心）则为 1，否则为 0。
+    \item $f_{uv}^k\ge 0$：单商品流（Single-Commodity Flow, SCF）在弧 $(u,v)\in A$ 上的流量变量，用于强化容量与连通性（消除仅由客户构成的子回路）。
+    \item $\tau_i^k\ge 0$：车辆 $k$ 抵达客户 $i$ 时的续航势能（累计距离/能耗）变量，用于保证路径总续航不超过 $Q$。
+\end{itemize}
+
+为便于表述，定义车辆 $k$ 是否服务客户 $i$ 的辅助表达：
+\[
+y_i^k := \sum_{(u,i)\in A} x_{ui}^k \in [0,1].
+\]
+在整数解中 $y_i^k\in\{0,1\}$，表示客户 $i$ 是否由车辆 $k$ 服务。
+
+\subsection{目标函数}
+\begin{equation}
+\min \;
+\underbrace{\sum_{k\in\mathcal{K}}\sum_{(u,v)\in A} c_{uv}\,x_{uv}^k}_{\text{路径行驶成本}}
++
+\underbrace{\sum_{k\in\mathcal{K}}\sum_{j\in J} w_{\mathrm{orig}(k),j}\,z_{kj}}_{\text{车辆调度/切换成本}}.
+\label{eq:obj_scf}
+\end{equation}
+
+\paragraph{解释.}
+第一项为车辆在运营路网中行驶产生的可加成本；第二项刻画车辆从其初始位置切换到所选中心的调度成本，体现“车辆初始位置切换成本”的业务含义。
+
+\subsection{约束条件}
+
+\subsubsection{车辆派遣与服务覆盖约束}
+\paragraph{(C1) 车辆最多选择一个中心.}
+\begin{equation}
+\sum_{j\in J} z_{kj} \le 1,\quad \forall k\in\mathcal{K}.
+\label{eq:c1}
+\end{equation}
+\paragraph{解释.}
+每辆车要么不出车（左侧为 0），要么从某一个中心出发（左侧为 1），避免同一车辆在多个中心同时出车。
+
+\paragraph{(C2) 客户恰好服务一次.}
+\begin{equation}
+\sum_{k\in\mathcal{K}}\sum_{(u,i)\in A} x_{ui}^k = 1,\quad \forall i\in I.
+\label{eq:c2}
+\end{equation}
+\paragraph{解释.}
+每个客户节点在全系统范围内恰好被某辆车访问一次（用“入弧=1”表达），保证服务覆盖且不重复服务。
+
+\paragraph{(C3) 客户点车辆流守恒（路径连续性）.}
+\begin{equation}
+\sum_{(u,i)\in A} x_{ui}^k = \sum_{(i,v)\in A} x_{iv}^k,
+\quad \forall i\in I,\ \forall k\in\mathcal{K}.
+\label{eq:c3}
+\end{equation}
+\paragraph{解释.}
+对每辆车而言，进入某客户则必须从该客户离开，保证路径连续且防止“某车进入、另一车离开”的非物理解。
+
+\paragraph{(C4) 中心出入度与派遣决策一致（闭环路线）.}
+\begin{align}
+\sum_{(j,v)\in A} x_{jv}^k &= z_{kj},\quad \forall j\in J,\ \forall k\in\mathcal{K},
+\label{eq:c4a}\\
+\sum_{(u,j)\in A} x_{uj}^k &= z_{kj},\quad \forall j\in J,\ \forall k\in\mathcal{K}.
+\label{eq:c4b}
+\end{align}
+\paragraph{解释.}
+若车辆 $k$ 从中心 $j$ 出车（$z_{kj}=1$），则必须从 $j$ 出发一次并最终回到 $j$ 一次，形成闭环；若 $z_{kj}=0$，则车辆在 $j$ 的出入度均为 0，避免访问未派遣中心。
+
+\paragraph{(C5) 中心车辆数量上限.}
+\begin{equation}
+\sum_{k\in\mathcal{K}} z_{kj} \le K^{\max}_j,\quad \forall j\in J.
+\label{eq:c5}
+\end{equation}
+\paragraph{解释.}
+每个中心可派遣车辆数受制于车队规模、充电设施数量或装载能力等运营限制。
+
+\paragraph{(C6) 车辆启用联动.}
+\begin{equation}
+\sum_{(u,i)\in A} x_{ui}^k \le \sum_{j\in J} z_{kj},
+\quad \forall i\in I,\ \forall k\in\mathcal{K}.
+\label{eq:c6}
+\end{equation}
+\paragraph{解释.}
+若车辆 $k$ 未被派遣（右侧为 0），则不能访问任何客户；该约束显式阻止“未派遣车辆服务客户”的不一致解。
+
+\subsubsection{SCF 强化：容量与连通性约束}
+本节采用单商品流（SCF）结构对容量与连通性进行联合建模。其核心思想是：对车辆 $k$，若其服务一组客户，则必须从所选中心向外提供足够的“流量”（可理解为总需求量），并在每个被服务客户处消耗对应需求。由此可在 LP 松弛层面有效消除仅由客户构成的子回路（subtour），从而显著增强下界。
+
+\paragraph{(C7) 流量-弧选择联动.}
+\begin{equation}
+0 \le f_{uv}^k \le U\,x_{uv}^k,
+\quad \forall (u,v)\in A,\ \forall k\in\mathcal{K}.
+\label{eq:c7}
+\end{equation}
+\paragraph{解释.}
+若弧未被选择（$x_{uv}^k=0$），则流量必须为 0；若弧被选择，则流量不超过车辆容量 $U$，从而在流层面刻画容量上限。
+
+\paragraph{(C8) 客户流守恒与需求消耗.}
+\begin{equation}
+\sum_{(u,i)\in A} f_{ui}^k - \sum_{(i,v)\in A} f_{iv}^k
+=
+q_i \sum_{(u,i)\in A} x_{ui}^k,
+\quad \forall i\in I,\ \forall k\in\mathcal{K}.
+\label{eq:c8}
+\end{equation}
+\paragraph{解释.}
+若客户 $i$ 由车辆 $k$ 服务（右侧为 $q_i$），则在该客户处净消耗 $q_i$ 的流量；若不服务（右侧为 0），则流入等于流出。该结构确保流量只能从中心逐步传递至被服务客户。
+
+\paragraph{(C9) 中心作为唯一源点（以派遣变量门控）.}
+定义车辆 $k$ 服务的总需求为
+\[
+D_k := \sum_{i\in I} q_i \sum_{(u,i)\in A} x_{ui}^k.
+\]
+对每个中心 $j$，要求车辆 $k$ 的流量净流出等于 $D_k$，但仅当车辆确实选择该中心（$z_{kj}=1$）时生效：
+\begin{align}
+\sum_{(j,v)\in A} f_{jv}^k - \sum_{(u,j)\in A} f_{uj}^k
+&\ge D_k - M_D(1-z_{kj}),
+\quad \forall j\in J,\ \forall k\in\mathcal{K},
+\label{eq:c9a}\\
+\sum_{(j,v)\in A} f_{jv}^k - \sum_{(u,j)\in A} f_{uj}^k
+&\le D_k + M_D(1-z_{kj}),
+\quad \forall j\in J,\ \forall k\in\mathcal{K}.
+\label{eq:c9b}
+\end{align}
+其中 $M_D$ 为足够大的常数。取 $M_D=\sum_{i\in I} q_i$ 可给出紧的上界。
+
+\paragraph{解释.}
+当 $z_{kj}=1$ 时，上式迫使中心 $j$ 为车辆 $k$ 提供恰好 $D_k$ 的净输出流，从而成为车辆路径连通结构的“源”。若存在一个仅由客户构成的子回路，则该子回路内客户存在正的需求消耗，但没有任何中心提供源流，因而在该结构下（即使在 LP 松弛中）也无法满足约束，从而有效消除子回路并增强线性松弛界。
+
+\subsubsection{续航约束（势能法，带门控）}
+续航约束要求车辆从中心出发至服务客户并回到中心的总距离/能耗不超过 $Q$。为此定义客户处势能变量 $\tau_i^k$，并在弧选择时进行势能递推。
+
+\paragraph{(C10) 势能上界（仅对被访问客户生效）.}
+\begin{equation}
+0 \le \tau_i^k \le Q \sum_{(u,i)\in A} x_{ui}^k,
+\quad \forall i\in I,\ \forall k\in\mathcal{K}.
+\label{eq:c10}
+\end{equation}
+\paragraph{解释.}
+若车辆 $k$ 不访问客户 $i$，则势能被压为 0；若访问，则势能不超过 $Q$。
+
+\paragraph{(C11) 客户--客户势能递推.}
+\begin{equation}
+\tau_h^k \ge \tau_i^k + d_{ih} - Q(1-x_{ih}^k),
+\quad \forall k\in\mathcal{K},\ \forall i\neq h\in I.
+\label{eq:c11}
+\end{equation}
+\paragraph{解释.}
+当弧 $(i,h)$ 被车辆 $k$ 选择时（$x_{ih}^k=1$），该约束强制 $\tau$ 累积增加至少 $d_{ih}$；当弧未选择时，通过大 $M$（此处取 $Q$）放松。
+
+\paragraph{(C12) 中心--客户初始化（以 $z_{kj}$ 门控）.}
+\begin{equation}
+\tau_i^k \ge d_{ji} - Q(1-x_{ji}^k) - M_\tau(1-z_{kj}),
+\quad \forall k\in\mathcal{K},\ \forall j\in J,\ \forall i\in I.
+\label{eq:c12}
+\end{equation}
+\paragraph{解释.}
+当车辆 $k$ 选择中心 $j$ 且从 $j$ 直接到达客户 $i$ 时，初始化势能不小于 $d_{ji}$。门控项 $(1-z_{kj})$ 确保未被车辆选择的中心不会对 $\tau$ 施加不必要下界（这是避免错误不可行与弱松弛的关键）。
+
+\paragraph{(C13) 回中心可行性（以 $z_{kj}$ 门控）.}
+\begin{equation}
+\tau_i^k + d_{ij}
+\le
+Q + M_\tau(1-x_{ij}^k) + M_\tau(1-z_{kj}),
+\quad \forall k\in\mathcal{K},\ \forall j\in J,\ \forall i\in I.
+\label{eq:c13}
+\end{equation}
+\paragraph{解释.}
+若车辆 $k$ 选择中心 $j$ 且从客户 $i$ 返回 $j$，则要求到达客户 $i$ 的累计势能加上返程距离不超过 $Q$。门控项保证仅对车辆真实选择的中心生效。
+
+\paragraph{大 $M$ 取值说明.}
+对于 \eqref{eq:c9a}--\eqref{eq:c9b}，取 $M_D=\sum_{i\in I}q_i$ 为紧的选择；对于 \eqref{eq:c12}--\eqref{eq:c13}，可取 $M_\tau=Q$（安全且较紧）。
+
+\subsection{模型小结与性质说明}
+\begin{itemize}
+    \item \textbf{等价性：} 约束 \eqref{eq:c1}--\eqref{eq:c6} 保证车辆派遣机制与闭环路径结构；\eqref{eq:c7}--\eqref{eq:c9b} 保证容量可行并消除客户子回路；\eqref{eq:c10}--\eqref{eq:c13} 保证续航上限。整体上与“多中心车辆路径问题（MDVRP）+ 车辆派遣 + 容量与续航限制”的业务语义等价。
+    \item \textbf{LP 强度：} 与 MTZ 类子回路消除相比，SCF 在 LP 松弛层面即可排除大规模分数子回路，从而通常带来显著更紧的下界与更快的 incumbent 搜索速度。
+    \item \textbf{可扩展性：} 若需引入时间窗、服务时间、异质车辆或充电补能过程，可在现有结构上继续添加到达时间变量及其传播约束，或对不同车辆设定 $U_k, Q_k$。
+\end{itemize}
+
+\section{基于集合划分的列生成建模框架}
+\label{sec:sp_cg_model}
+
+本节将运营阶段的弧变量 SCF 强模型重构为基于集合划分（Set Partitioning, SP）的列生成建模框架。该框架以“可行车辆闭环路线”为基本决策单元，将指数规模的路径组合空间隐式表示在列集合中，并通过定价子问题按需生成具有负化简成本的路线列。
+
+该建模方式是车辆路径问题（VRP）精确算法中的主流范式，能够显著增强线性松弛强度，并为后续分支定价或分支割定价算法奠定基础。
+
+\subsection{路线列定义}
+
+设车辆集合为 $\mathcal{K}$，中心集合为 $J$，客户集合为 $I$。对任意车辆 $k\in\mathcal{K}$ 与中心 $j\in J$，定义其可行闭环路线集合为：
+\[
+\mathcal{R}_{kj} :=
+\left\{
+r:\ j \to i_1 \to i_2 \to \dots \to i_m \to j
+\;\middle|\;
+\sum_{i\in I} q_i a_{ir} \le U,\;
+\sum_{(u,v)\in r} d_{uv} \le Q,\;
+\text{且客户不重复访问}
+\right\}.
+\]
+
+其中：
+\begin{itemize}
+    \item $a_{ir}\in\{0,1\}$：若路线 $r$ 服务客户 $i$，则为1；
+    \item $\sum_i q_i a_{ir} \le U$：容量约束；
+    \item $\sum_{(u,v)\in r} d_{uv} \le Q$：续航（路线长度）约束。
+\end{itemize}
+
+\paragraph{列变量.}
+对每条路线 $r\in\mathcal{R}_{kj}$，定义决策变量：
+\[
+\lambda_{kjr}\in\{0,1\},
+\]
+表示车辆 $k$ 是否选择从中心 $j$ 出发执行路线 $r$。
+
+\paragraph{列成本.}
+路线列的总成本由两部分组成：
+\[
+c_{kjr}
+=
+\sum_{(u,v)\in r} c_{uv}
++
+w_{\mathrm{orig}(k),j},
+\]
+其中第一项为路线行驶成本，第二项为车辆从初始位置切换至中心 $j$ 的调度成本。
+
+\subsection{集合划分主问题（RMP）}
+
+基于上述路线列定义，可构建集合划分主问题如下：
+
+\begin{align}
+\min \quad
+& \sum_{k\in\mathcal{K}}\sum_{j\in J}\sum_{r\in\mathcal{R}_{kj}}
+c_{kjr}\lambda_{kjr}
+\label{eq:sp_obj}
+\\
+\text{s.t.}\quad
+& \sum_{k\in\mathcal{K}}\sum_{j\in J}\sum_{r\in\mathcal{R}_{kj}}
+a_{ir}\lambda_{kjr}
+=1,
+&& \forall i\in I
+\label{eq:sp_cover}
+\\
+& \sum_{j\in J}\sum_{r\in\mathcal{R}_{kj}}
+\lambda_{kjr}
+\le 1,
+&& \forall k\in\mathcal{K}
+\label{eq:sp_vehicle}
+\\
+& \sum_{k\in\mathcal{K}}\sum_{r\in\mathcal{R}_{kj}}
+\lambda_{kjr}
+\le K_j^{\max},
+&& \forall j\in J
+\label{eq:sp_depot}
+\\
+& \lambda_{kjr}\in\{0,1\},
+&& \forall k,j,r.
+\label{eq:sp_binary}
+\end{align}
+
+\paragraph{约束解释.}
+\begin{itemize}
+    \item \eqref{eq:sp_cover}：每个客户恰好被一条路线服务一次；
+    \item \eqref{eq:sp_vehicle}：每辆车至多执行一条路线；
+    \item \eqref{eq:sp_depot}：每个中心的出车数量不超过其能力上限。
+\end{itemize}
+
+由于每条列本身已保证“从中心出发并回到该中心”的闭环结构，因此无需在主问题中再显式建模路径连续性或中心出入度约束。
+
+\subsection{主问题的对偶与化简成本}
+
+在列生成过程中，首先对主问题的线性松弛（$\lambda\ge 0$）求解，并引入如下对偶变量：
+
+\begin{itemize}
+    \item $\pi_i$：客户覆盖约束 \eqref{eq:sp_cover} 的对偶变量；
+    \item $\alpha_k\ge 0$：车辆使用约束 \eqref{eq:sp_vehicle} 的对偶变量；
+    \item $\beta_j\ge 0$：中心容量约束 \eqref{eq:sp_depot} 的对偶变量。
+\end{itemize}
+
+则任意列 $(k,j,r)$ 的化简成本（reduced cost）为：
+\begin{equation}
+\bar c_{kjr}
+=
+c_{kjr}
+-
+\sum_{i\in I}\pi_i a_{ir}
+-
+\alpha_k
+-
+\beta_j.
+\label{eq:reduced_cost}
+\end{equation}
+
+若存在 $\bar c_{kjr}<0$ 的列，则将其加入主问题；若所有列的化简成本均非负，则当前主问题线性松弛已达到最优。
+
+\subsection{定价子问题：RCSPP 建模}
+
+对固定车辆 $k$ 与中心 $j$，定价子问题的目标是寻找一条从 $j$ 出发回到 $j$ 的可行路线 $r$，使得其化简成本最小。
+
+由于 $-\alpha_k-\beta_j$ 为常数项，定价子问题可等价写为：
+
+\begin{align}
+\min_{r}
+\quad
+& \sum_{(u,v)\in r} c_{uv}
+-
+\sum_{i\in I} \pi_i a_{ir}
+\label{eq:pricing_obj}
+\\
+\text{s.t.}\quad
+& \sum_{i\in I} q_i a_{ir} \le U
+\label{eq:pricing_cap}
+\\
+& \sum_{(u,v)\in r} d_{uv} \le Q
+\label{eq:pricing_range}
+\\
+& r:\ j\rightarrow j,\quad
+\text{且客户至多访问一次}.
+\end{align}
+
+该问题即为带资源约束的最短路径问题（Resource Constrained Shortest Path Problem, RCSPP）；若要求客户不重复访问，则为元素路径版本（ESPPRC）。
+
+\subsection{ng-route 放松的定价子问题}
+
+为降低 ESPPRC 的计算复杂度，本研究在定价阶段采用 ng-route 放松。其核心思想是：
+
+\begin{itemize}
+    \item 对每个客户 $i$ 定义一个邻域集合 $N_i$；
+    \item 在路径扩展过程中，仅在最近邻集合内强制元素性约束；
+    \item 允许在远离该邻域的节点发生受控重复访问，从而减少状态空间。
+\end{itemize}
+
+在标签扩展过程中，每个标签 $L$ 记录：
+\[
+L = (i,\; \text{cost},\; \text{load},\; \text{dist},\; \mathcal{V}_L),
+\]
+其中：
+\begin{itemize}
+    \item $i$：当前节点；
+    \item $\text{cost}$：累计化简成本；
+    \item $\text{load}$：累计载重；
+    \item $\text{dist}$：累计距离；
+    \item $\mathcal{V}_L$：ng-route 访问记忆集合。
+\end{itemize}
+
+标签扩展需满足：
+\[
+\text{load} \le U,\qquad
+\text{dist} \le Q,
+\]
+且若扩展至节点 $h\in \mathcal{V}_L$，则该扩展被禁止。
+
+通过该放松，定价子问题仍保持 RCSPP 的结构，但显著减少状态数量，在实践中可获得接近 ESPPRC 的下界质量。
+
+\subsection{模型结构总结}
+
+通过上述变换，原始弧变量 SCF 模型被等价重构为：
+
+\begin{itemize}
+    \item 主问题：集合划分模型，决定路线选择与车辆派遣；
+    \item 子问题：以 RCSPP（ng-route 放松）形式求解的定价问题；
+    \item 整体算法：列生成或分支定价框架。
+\end{itemize}
+
+该结构避免了弧变量模型中的大规模流变量与大 $M$ 门控约束，使得线性松弛更紧，并为大规模实例的精确求解提供了可扩展的算法基础。
+
+\section{Cuts 与定价加速：面向 MDVRP--RL 的鲁棒分支割定价设计}
+\label{sec:cuts_pricing_accel}
+
+本节系统总结可用于加速本文 \emph{多中心有限车队车辆路径问题}（MDVRP，含容量约束与路线长度/续航约束）的割平面（cuts）与定价（pricing）加速策略。我们采用集合划分（Set Partitioning, SP）主问题与资源约束最短路（RCSPP）定价子问题的标准分支割定价（Branch-Cut-and-Price, BCP）范式\cite{Lubbecke2005,Pessoa2008,Feillet2010}。本文特别关注两类技术要点：
+(i) \emph{鲁棒（robust）割}：不破坏定价子问题的伪多项式可解性；
+(ii) \emph{定价强化与剪枝}：在 ng-route 放松与资源双维（载重、距离）约束下显著降低状态空间与定价次数。
+
+\subsection{问题与符号回顾：SP 主问题与定价结构}
+\label{subsec:recap_sp_pricing}
+
+设客户集合为 $I$，中心集合为 $J$，车辆集合为 $\mathcal{K}$。对任意车辆--中心对 $(k,j)$，记可行闭环路线集合为 $\mathcal{R}_{kj}$，并以 $\lambda_{kjr}\in\{0,1\}$ 表示是否选择路线列 $r\in\mathcal{R}_{kj}$。
+令 $a_{ir}\in\{0,1\}$ 表示路线 $r$ 是否服务客户 $i$，则 SP 主问题（RMP）的核心覆盖约束为
+\begin{equation}
+\sum_{k\in\mathcal{K}}\sum_{j\in J}\sum_{r\in\mathcal{R}_{kj}} a_{ir}\lambda_{kjr}=1,\quad \forall i\in I.
+\label{eq:cover}
+\end{equation}
+此外存在车辆使用上限与中心出车上限约束（略）。
+
+在列生成中，对覆盖约束 \eqref{eq:cover} 引入对偶变量 $\pi_i$，对车辆与中心上限引入对偶 $\alpha_k,\beta_j$，则列 $(k,j,r)$ 的化简成本为
+\begin{equation}
+\bar c_{kjr}=c_{kjr}-\sum_{i\in I}\pi_i a_{ir}-\alpha_k-\beta_j,
+\label{eq:rc_master}
+\end{equation}
+其中 $c_{kjr}$ 为路线行驶成本与车辆切换成本之和。定价子问题对固定 $(k,j)$ 等价为在图 $G=(V,A)$ 上寻找从 $j$ 出发回到 $j$ 的闭环路径 $r$ 使得
+\begin{equation}
+\min\;\sum_{(u,v)\in r} c_{uv}-\sum_{i\in I}\pi_i a_{ir}
+\quad \text{s.t.}\quad
+\sum_{i\in I}q_i a_{ir}\le U,\;\sum_{(u,v)\in r} d_{uv}\le Q,
+\label{eq:pricing_rcspp}
+\end{equation}
+该问题为 RCSPP；若要求元素路径则为 ESPPRC\cite{Feillet2010}。本文假设 $d_{uv}$ 与 $c_{uv}$ 同度量（例如均为路程），从而可在剪枝与支配规则中获得更强结构性优势（见 \S\ref{subsec:dominance}）。
+
+\subsection{主问题割平面：鲁棒 cuts 与非鲁棒 cuts}
+\label{subsec:master_cuts}
+
+在 BCP 框架下，主问题割平面通常直接施加于 $\lambda$ 变量空间，用以收紧 LP 松弛并减少分支树规模。根据割对定价结构的影响，可将其分为 \emph{鲁棒割} 与 \emph{非鲁棒割}\cite{Pessoa2008}。
+
+\subsubsection{Rounded Capacity Inequalities（RCC）：容量割（鲁棒、首选）}
+\label{subsubsec:rcc}
+
+\paragraph{动机与形式.}
+容量约束 $\sum_i q_i a_{ir}\le U$ 蕴含：任意客户子集 $S\subseteq I$ 的总需求量 $q(S)=\sum_{i\in S}q_i$ 至少需要
+\[
+\eta(S):=\left\lceil \frac{q(S)}{U}\right\rceil
+\]
+条车辆路线来服务。由此可得到经典的 \emph{rounded capacity cut}（RCC）家族\cite{Lysgaard2004CVRPSEP}：
+\begin{equation}
+\sum_{k\in\mathcal{K}}\sum_{j\in J}\sum_{r\in\mathcal{R}_{kj}}
+\delta(S,r)\,\lambda_{kjr}
+\;\ge\;
+\eta(S),
+\quad \forall S\subseteq I,
+\label{eq:rcc}
+\end{equation}
+其中 $\delta(S,r)\in\{0,1\}$ 表示路线 $r$ 是否访问集合 $S$（至少包含一个客户于 $S$）。
+
+\paragraph{有效性推导（证明思路）.}
+对任意可行整数解，令 $\mathcal{T}$ 表示被选中的路线集合。由于每条路线 $r\in\mathcal{T}$ 的载重至多为 $U$，这些路线用于服务 $S$ 的总可交付需求不超过 $U\cdot |\{r\in\mathcal{T}:\delta(S,r)=1\}|$。另一方面，覆盖约束 \eqref{eq:cover} 要求 $S$ 内每个客户需求被某条路线承载，故必须满足
+\[
+U\cdot |\{r\in\mathcal{T}:\delta(S,r)=1\}|
+\ge q(S).
+\]
+将两边除以 $U$ 并向上取整即得
+\[
+|\{r\in\mathcal{T}:\delta(S,r)=1\}|
+\ge \left\lceil \frac{q(S)}{U}\right\rceil=\eta(S),
+\]
+等价于 \eqref{eq:rcc}。证毕。
+
+\paragraph{分离与工程实现.}
+RCC 的精确分离可转化为最小割/子集搜索问题，工业实现通常采用成熟的分离器（例如 CVRPSEP）或启发式分离\cite{Lysgaard2004CVRPSEP}。RCC 属于鲁棒 cuts：其加入不会改变定价子问题的 RCSPP 结构，仅通过对偶反馈改变 $\pi$ 的取值与负化简成本列的产生顺序\cite{Pessoa2008}。
+
+\subsubsection{Clique cuts：基于不相容关系的团不等式（鲁棒、强）}
+\label{subsubsec:clique}
+
+\paragraph{不相容图构造.}
+定义客户对 $(i,h)$ 的 \emph{不相容}：若任何可行闭环路线均无法同时服务 $i$ 与 $h$，则在冲突图 $G^{conf}$ 中加入边 $(i,h)$。在本文问题中，可由以下两类充分条件构造不相容边：
+\begin{enumerate}
+\item \textbf{容量不相容：} 若 $q_i+q_h>U$，则 $i$ 与 $h$ 不可同一路线；
+\item \textbf{续航不相容（同度量优势）：} 若对任意中心 $j\in J$，存在闭环长度下界
+\[
+d_{ji}+d_{ih}+d_{hj} > Q,
+\]
+则任何从 $j$ 出发回 $j$ 且访问 $\{i,h\}$ 的路线均违反续航约束，因此 $i,h$ 不相容。
+\end{enumerate}
+
+\paragraph{团不等式形式.}
+对冲突图任意团（clique）$C\subseteq I$，任一可行路线最多服务团中一个客户，因此得到 clique cut\cite{Baldacci2008}：
+\begin{equation}
+\sum_{k\in\mathcal{K}}\sum_{j\in J}\sum_{r\in\mathcal{R}_{kj}}
+\left(\sum_{i\in C} a_{ir}\right)\lambda_{kjr}
+\;\le\; 1.
+\label{eq:clique_cut}
+\end{equation}
+
+\paragraph{有效性证明.}
+对任意可行整数解，设存在一条被选路线 $r$ 同时服务 $C$ 中两个不同客户 $i\neq h$。由于 $C$ 为团，$(i,h)$ 不相容，矛盾。因此任意被选路线至多包含 $C$ 中一个客户，故所有被选路线对团客户的覆盖计数之和不超过 1，即 \eqref{eq:clique_cut} 成立。证毕。
+
+\paragraph{鲁棒性与实践意义.}
+clique cuts 对 SP 松弛非常有效，且仍保持鲁棒性：其对偶信息可被吸收为客户访问的附加惩罚，不要求定价显式追踪复杂组合结构\cite{Pessoa2008,Baldacci2008}。
+
+\subsubsection{Subset Row Inequalities（SRI）：秩1 Chv\'atal--Gomory 割（鲁棒）}
+\label{subsubsec:sri}
+
+\paragraph{背景.}
+SRI 是针对集合划分/覆盖矩阵的经典秩1 CG-cut，在 VRPTW/VRP 的 BCP 中常被用于打击分数覆盖结构\cite{Jepsen2008}。
+
+\paragraph{构造（概念性推导）.}
+考虑覆盖等式 \eqref{eq:cover} 的一个行子集 $\mathcal{S}\subseteq I$，对这些行作线性组合并进行 CG 向上取整，可得到形如
+\begin{equation}
+\sum_{k,j,r} \left\lceil \sum_{i\in \mathcal{S}}\theta_i a_{ir}\right\rceil \lambda_{kjr}
+\;\ge\; \left\lceil \sum_{i\in\mathcal{S}}\theta_i \right\rceil,
+\label{eq:sri_template}
+\end{equation}
+其中 $\theta_i\in(0,1]$ 为组合系数。实际实现中，SRI 的分离通常通过启发式或特定结构的最违反行组合获得\cite{Jepsen2008}。
+
+\paragraph{鲁棒性.}
+SRI 作为主问题的秩1 cut 通常被视为鲁棒 cuts 的一类：其不会要求定价携带难以处理的全局组合记忆，而只通过对偶改变列的相对吸引力\cite{Pessoa2008,Jepsen2008}。
+
+\subsubsection{非鲁棒 cuts：使用原则与适用场景}
+\label{subsubsec:nonrobust}
+
+\paragraph{定义与风险.}
+非鲁棒 cuts 指加入后会破坏定价子问题的可解结构（例如迫使定价携带高维全局计数/组合状态，导致伪多项式 DP 失效），或使得 ``pricing-as-RCSPP'' 不再成立\cite{Pessoa2008}。
+
+\paragraph{实践建议.}
+对于本文问题，我们建议将非鲁棒 cuts 控制在如下场景：
+\begin{itemize}
+\item \textbf{根节点少量加入：} 仅添加最违反的一小批，以快速压缩 root gap；
+\item \textbf{后期整数化：} 当列集合已较丰富、定价调用次数下降时，可适当使用更强但更重的 cuts；
+\item \textbf{与 MILP 定价配合：} 若某些节点采用 MILP 求解定价（见 \S\ref{subsec:pricing_mip}），则可承受非鲁棒 cuts 带来的结构破坏。
+\end{itemize}
+
+\subsection{定价子问题强化与加速：ng-route、支配规则与边剪枝}
+\label{subsec:pricing_accel}
+
+在本文框架中，定价子问题为带两类资源（载重、距离）的 RCSPP。直接求解 ESPPRC 通常代价高昂，因此我们采用 ng-route 放松并辅以支配规则、$k$-cycle 消除以及基于下界的边剪枝\cite{Feillet2010,IrnichVilleneuve2006,Contardo2014}。
+
+\subsubsection{ng-route 放松：受控非元素路径与正确性}
+\label{subsubsec:ngroute}
+
+\paragraph{定义.}
+对每个客户 $i$ 给定邻域集合 $N_i\subseteq I$（如按距离最近的 $p$ 个客户）。在标签扩展中，维护访问记忆集合 $\mathcal{V}$，其更新规则可写为
+\begin{equation}
+\mathcal{V}' \;=\; \left(\mathcal{V}\cap N_h\right)\cup\{h\},
+\label{eq:ng_update}
+\end{equation}
+其中 $h$ 为扩展到的新节点。若 $h\in\mathcal{V}$ 则禁止扩展，以此在局部邻域上强制元素性。
+
+\paragraph{性质（放松的下界有效性）.}
+ng-route 允许一定程度的远邻重复访问，因此其可行域包含 ESPPRC 的可行域（即对元素性要求的放松），从而定价得到的最优值不大于 ESPPRC 的最优值，进而主问题 LP 下界不会被破坏（但可能变弱）。这一 ``可行域包含'' 关系与其对 CG 下界的影响可参考非元素路径定价策略的系统讨论\cite{Feillet2010,Martinelli2014}。
+
+\subsubsection{$k$-cycle elimination：小环消除（鲁棒强化）}
+\label{subsubsec:kcycle}
+
+\paragraph{动机.}
+ng-route 仍可能产生包含短环的非元素路径，造成大量 ``伪负化简成本'' 列。为此可加入 $k$-cycle elimination（典型 $k=2,3$）以排除短环结构\cite{IrnichVilleneuve2006}。
+
+\paragraph{有效性说明（以 2-cycle 为例）.}
+2-cycle 指路径片段 $i\to h\to i$。由于 $d=c$ 同度量且边权非负，该片段在不增加覆盖价值的前提下增加成本与资源消耗，因此在最优定价路径中通常可被支配排除。将其作为显式禁忌可减少状态空间并提升定价效率\cite{IrnichVilleneuve2006}。
+
+\subsubsection{支配（dominance）规则与证明：双资源 RCSPP 的标准剪枝}
+\label{subsec:dominance}
+
+定价采用标签法（label-setting/label-correcting）时，核心在于支配规则以删去无必要标签\cite{Feillet2010}。
+
+\paragraph{标签定义.}
+每个标签 $L$ 表示从起点中心 $j$ 到当前节点 $v$ 的一条部分路径，其状态包括：
+\[
+L=(v,\; \mathrm{rc}(L),\; \mathrm{load}(L),\; \mathrm{dist}(L),\; \mathcal{V}(L)),
+\]
+其中 $\mathrm{rc}(L)$ 为累计 ``定价目标''（行驶成本减对偶收益），$\mathrm{load}$ 与 $\mathrm{dist}$ 分别为载重与距离资源消耗，$\mathcal{V}$ 为 ng-memory。
+
+\paragraph{引理（支配充分条件）.}
+\begin{theorem}[标签支配]
+\label{thm:dominance}
+考虑到达同一节点 $v$ 的两个标签 $L_1,L_2$。若满足
+\begin{align}
+&\mathrm{rc}(L_1)\le \mathrm{rc}(L_2),\quad
+\mathrm{load}(L_1)\le \mathrm{load}(L_2),\quad
+\mathrm{dist}(L_1)\le \mathrm{dist}(L_2),\label{eq:dom_res}\\
+&\mathcal{V}(L_1)\subseteq \mathcal{V}(L_2),\label{eq:dom_mem}
+\end{align}
+且至少一个不等式严格成立，则 $L_1$ 支配 $L_2$，即以 $L_2$ 为前缀的任何可行扩展都可由 $L_1$ 的扩展构造出不更差的可行解，因此 $L_2$ 可安全删除。
+\end{theorem}
+
+\begin{proof}
+任取 $L_2$ 的任意可行扩展序列（后缀路径）$P$。由于 \eqref{eq:dom_mem}，$L_1$ 的 ng-memory 不比 $L_2$ 更严格，故 $P$ 中每次 ``禁止访问'' 判断在 $L_1$ 下仍可行（不会因为更大的记忆集合而被禁）。同时由 \eqref{eq:dom_res}，$L_1$ 的资源消耗不超过 $L_2$，因此在载重与距离上，$L_1$ 扩展后仍满足资源上界。由于目标函数在扩展过程中对每条边的代价增量相同，且 $L_1$ 的初始累计目标不大于 $L_2$，故 $L_1$ 与相同后缀 $P$ 组合所得完整路径目标值不大于 $L_2$ 对应的完整路径目标值。由此 $L_2$ 不可能产生严格优于 $L_1$ 的解，可安全删除。证毕。
+\end{proof}
+
+\paragraph{同度量优势.}
+当 $d=c$ 同度量且边权满足度量性质时，可加入更强的 \emph{completion bound}（例如从当前节点返回中心的最短路下界）并与 \eqref{thm:dominance} 结合得到更强剪枝；该思想属于 RCSPP 定价的标准增强\cite{Feillet2010}。
+
+\subsubsection{基于下界的边剪枝（edge filtering）：与 SCF 下界耦合的加速机制}
+\label{subsubsec:edge_filtering}
+
+\paragraph{思想.}
+利用强下界（例如 vehicle-flow/SCF 松弛）对定价图进行弧删减：若某条弧 $(u,v)$ 在任何可能的负化简成本路线中都不可能出现，则可提前删除，从而缩小定价图规模并减少标签扩展次数\cite{Contardo2014}。
+
+\paragraph{命题（充分条件）.}
+记某次定价迭代中，对固定中心 $j$，令 $\ell_{uv}$ 表示在定价目标下经过弧 $(u,v)$ 的最小可能 ``局部增量下界''（可由最短路预处理获得）。若对任意可行前缀到达 $u$ 的标签 $L$，均有
+\begin{equation}
+\mathrm{rc}(L)+\ell_{uv}+\mathrm{LB}_{v\to j} \ge 0,
+\label{eq:edge_elim_cond}
+\end{equation}
+其中 $\mathrm{LB}_{v\to j}$ 为从 $v$ 返回中心 $j$ 的目标下界（忽略资源或用资源松弛下界），则弧 $(u,v)$ 不可能出现在任何负化简成本闭环路线中，可从定价图中删除。
+
+\begin{proof}
+对任意包含弧 $(u,v)$ 的闭环路线，其目标值可分解为：到达 $u$ 的前缀目标 $\mathrm{rc}(L)$，经过弧 $(u,v)$ 的增量，以及从 $v$ 返回中心的后缀目标。由下界定义，完整闭环目标值至少为 $\mathrm{rc}(L)+\ell_{uv}+\mathrm{LB}_{v\to j}$。若对所有可行前缀均满足 \eqref{eq:edge_elim_cond}，则任何包含 $(u,v)$ 的闭环路线目标值均非负，因而其化简成本亦非负，不可能生成改善列。故该弧可安全删除。证毕。
+\end{proof}
+
+该类 ``用下界做 edge elimination'' 的有效性与工程价值在 MDVRP(capacity+route length) 的精确算法中已有清晰展示\cite{Contardo2014}。
+
+\subsubsection{当定价改用 MILP（或混合定价）时的子问题有效不等式}
+\label{subsec:pricing_mip}
+
+在分支深处或资源维数增加时，label-setting 可能出现状态爆炸。此时可采用混合策略：先用启发式/标签法寻找负列，必要时用 MILP 精确求解定价并加入子问题层面的有效不等式（如元素性强化、资源逻辑割等）。此类 ``子问题 branch-and-cut'' 思路在 RCSPP/ESPPRC 研究中已有系统探索\cite{JepsenTechReport2008}。
+
+\subsection{稳定化（Stabilization）：减少对偶振荡与冗余定价}
+\label{subsec:stabilization}
+
+车辆路径问题的列生成常出现对偶振荡，导致定价重复生成相似列、收敛缓慢。稳定化方法通过限制对偶变量的变化范围或添加惩罚项，使列生成迭代更平滑\cite{Lubbecke2005,Pessoa2008}。常见做法包括：
+\begin{itemize}
+\item \textbf{Box stabilization：} 将对偶变量限制在区间 $[\underline\pi,\overline\pi]$；
+\item \textbf{Penalty stabilization：} 在 RMP 目标中加入对偶偏离参考点的惩罚；
+\item \textbf{Hybrid stabilization：} 组合多种稳定化策略并自适应调参\cite{Pessoa2008}.
+\end{itemize}
+稳定化通常不改变定价子问题形式，因此属于鲁棒的整体加速机制。
+
+\subsection{小结：推荐的鲁棒 cut/加速组合（可用于消融实验）}
+\label{subsec:summary_reco}
+
+基于上述讨论，针对本文问题结构，推荐的 ``鲁棒优先'' 组合为：
+\begin{enumerate}
+\item 主问题：RCC（容量割） + clique cuts（由容量与续航不相容构造） + SRI（秩1割）；
+\item 定价：ng-route + $k$-cycle elimination + 强支配规则（含 completion bound）；
+\item 跨层耦合：SCF/vehicle-flow 下界驱动的 edge filtering；
+\item 全局：列生成稳定化（box/penalty/hybrid）。
+\end{enumerate}
+该组合在不破坏 RCSPP 可解结构的前提下，通常能够显著压缩 root gap 并减少定价调用次数，从而提升整体 BCP 可扩展性\cite{Pessoa2008,Feillet2010,Contardo2014}。
+
+\begin{thebibliography}{99}
+
+\bibitem{Lubbecke2005}
+M.~E. L{\"u}bbecke and J.~Desrosiers.
+\newblock Selected topics in column generation.
+\newblock \emph{Operations Research}, 53(6):1007--1023, 2005.
+
+\bibitem{Pessoa2008}
+A.~Pessoa, M.~Poggi de Arag{\~a}o, and others.
+\newblock Branch-cut-and-price: a survey.
+\newblock (Survey/Chapter version circulated on Optimization Online), 2008.
+
+\bibitem{Feillet2010}
+D.~Feillet.
+\newblock A tutorial on column generation and branch-and-price for vehicle routing problems.
+\newblock \emph{4OR}, 8:407--424, 2010.
+
+\bibitem{Baldacci2008}
+R.~Baldacci, N.~Christofides, and A.~Mingozzi.
+\newblock An exact algorithm for the vehicle routing problem based on the set partitioning formulation with additional cuts.
+\newblock \emph{Mathematical Programming}, 115:351--385, 2008.
+
+\bibitem{Jepsen2008}
+M.~Jepsen, B.~Petersen, S.~Spoorendonk, and S.~Ropke.
+\newblock Subset-row inequalities applied to the vehicle-routing problem with time windows.
+\newblock \emph{Operations Research}, 56(2):497--511, 2008.
+
+\bibitem{Lysgaard2004CVRPSEP}
+J.~Lysgaard, A.~N. Letchford, and R.~Eglese.
+\newblock A new branch-and-cut algorithm for the capacitated vehicle routing problem.
+\newblock (and the CVRPSEP separation framework; widely used implementation), 2004.
+
+\bibitem{IrnichVilleneuve2006}
+S.~Irnich and D.~Villeneuve.
+\newblock The shortest path problem with resource constraints and $k$-cycle elimination for vehicle routing.
+\newblock \emph{INFORMS Journal on Computing}, 18(4):391--406, 2006.
+
+\bibitem{Contardo2014}
+C.~Contardo.
+\newblock The multi-depot vehicle routing problem with capacity and route length constraints.
+\newblock \emph{EURO Journal on Transportation and Logistics}, 3:123--146, 2014.
+
+\bibitem{Martinelli2014}
+R.~Martinelli, R.~Mansini, and others.
+\newblock New route relaxations and pricing strategies for the vehicle routing problem.
+\newblock \emph{European Journal of Operational Research}, 2014.
+
+\bibitem{JepsenTechReport2008}
+M.~Jepsen.
+\newblock Branch-and-cut algorithms for the elementary shortest path problem with resource constraints (and related inequalities).
+\newblock Technical report, 2008.
+
+\end{thebibliography}
+
+\end{document}
