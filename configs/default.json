@@ -14,8 +14,20 @@
   "branch_strategy": "best_bound",
   "random_seed": 42,
   "enable_rcc": true,
-  "enable_clique": true,
+  "enable_clique": false,
   "enable_sri": true,
+  "rmp_solver": "auto",
+  "problem": {
+
+    "capacity_u": 1000.0,
+    "range_q": 500.0,
+    "cost_per_km": 1.0,
+    "vehicle_count": 10,
+    "customer_sheet_name": "BSS_data",
+    "depot_sheet_name": "Charging_data",
+    "vehicle_sheet_name": "Vehicle_data"
+  
+  },
   "enable_stabilization": true,
   "stabilization": {
     "method": "box",

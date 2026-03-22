@@ -55,6 +55,18 @@ CREATE TABLE batch_instances (
 - `dist_matrix.csv`: `from,to,value`
 
 ## Quick Start
+Install open-source HiGHS backend (via SciPy):
+
+```bash
+python3 -m pip install -U scipy
+```
+
+Or install project extras:
+
+```bash
+python3 -m pip install -e ".[highs]"
+```
+
 Run unit tests:
 
 ```bash
@@ -64,11 +76,32 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 Solve one instance:
 
 ```bash
-PYTHONPATH=src python3 -m bpc.cli.solve \
+PYTHONPATH=src .venv/bin/python -m bpc.cli.solve \
   --instance-id instA \
   --db-path instances.db \
+  --rmp-solver highs \
   --config configs/default.json \
   --output-dir outputs/instA
+```
+
+Choose RMP backend in config/CLI:
+- config: set `rmp_solver` to `auto` / `gurobi` / `highs`
+- CLI override: `--rmp-solver highs`
+
+Problem parameters can be configured in `configs/*.json` under `problem`, e.g.:
+
+```json
+{
+  "problem": {
+    "capacity_u": 200.0,
+    "range_q": 500.0,
+    "cost_per_km": 1.0,
+    "vehicle_count": 10,
+    "customer_sheet_name": "BSS_data",
+    "depot_sheet_name": "Charging_data",
+    "vehicle_sheet_name": "Vehicle_data"
+  }
+}
 ```
 
 Run experiment batch:
@@ -78,6 +111,47 @@ PYTHONPATH=src python3 -m bpc.cli.experiment \
   --batch-id batch_001 \
   --db-path instances.db \
   --config configs/default.json
+```
+
+Run repeated experiment from one Excel file:
+
+```bash
+PYTHONPATH=src python3 -m bpc.cli.experiment_excel \
+  --batch-id excel_batch_001 \
+  --excel-path src/bpc/data/stations.xlsx \
+  --config configs/default.json \
+  --repeat 3 \
+  --instance-prefix stations
+```
+
+Preprocess Excel once, then solve from cached instance data:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m bpc.cli.preprocess_excel \
+  --excel-path src/bpc/data/stations.xlsx \
+  --instance-id stations_cached \
+  --out-path outputs/stations_cached/preprocessed_instance.json
+```
+
+For workbooks with named sheets (e.g. `BSS_data/Charging_data/Vehicle_data`):
+
+```bash
+PYTHONPATH=src .venv/bin/python -m bpc.cli.preprocess_excel \
+  --excel-path src/bpc/data/data2.xlsx \
+  --instance-id data2_case \
+  --out-path outputs/data2_case/preprocessed_instance.json \
+  --customer-sheet-name BSS_data \
+  --depot-sheet-name Charging_data \
+  --vehicle-sheet-name Vehicle_data
+```
+
+```bash
+PYTHONPATH=src .venv/bin/python -m bpc.cli.solve \
+  --instance-id stations_cached \
+  --preprocessed-path outputs/stations_cached/preprocessed_instance.json \
+  --config configs/default.json \
+  --rmp-solver highs \
+  --output-dir outputs/stations_cached/solve_from_cache
 ```
 
 ## Minimal Example (SQLite + CSV)

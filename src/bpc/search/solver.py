@@ -28,6 +28,12 @@ from bpc.branching.arc_branching import pick_branch_arc, split_node
 from bpc.core.types import ExperimentReport, InstanceData, NodeState, SolveResult, SolverConfig
 from bpc.cuts.separators import separate_cuts
 from bpc.data.loader import load_instance
+from bpc.data.xlsx_loader import (
+    ExcelInstanceBundle,
+    dump_excel_model_profile,
+    load_instance_bundle_from_excel,
+    load_preprocessed_bundle,
+)
 from bpc.pricing.initializer import generate_initial_columns
 from bpc.pricing.ng_pricing import price_columns
 from bpc.rmp.master_problem import GurobiUnavailableError, MasterProblem
@@ -163,7 +169,7 @@ def _solve_node(
        - 提取对偶并运行 pricing 生成负化简成本列；
     3) 无新列后收敛，返回节点下界、整数性、候选路线与辅助信息。
     """
-    rmp = MasterProblem(instance, node, relax=True)
+    rmp = MasterProblem(instance, node, relax=True, solver_backend=cfg.rmp_solver)
 
     seed_cols = _enforce_node_feasible_columns(global_columns, node)
     rmp.add_columns(seed_cols)
@@ -175,7 +181,12 @@ def _solve_node(
         # Step A: 先解当前 RMP，得到对偶和分数解。
         info = rmp.solve()
         if not math.isfinite(info.obj_val):
-            return float("inf"), False, [], {"cg_iters": cg_iter, "cuts_added": cuts_added_total, "new_cols": 0}
+            return float("inf"), False, [], {
+                "cg_iters": cg_iter,
+                "cuts_added": cuts_added_total,
+                "new_cols": 0,
+                "fail_stage": "solve_before_cuts",
+            }
 
         rounds = _rounds(cfg, at_root)
         cuts_added_this_iter = 0
@@ -190,6 +201,24 @@ def _solve_node(
             cuts_added_this_iter += cuts_added
             if cuts_added:
                 info = rmp.solve()
+                if not math.isfinite(info.obj_val):
+                    trace_rows.append(
+                        {
+                            "node_id": node.node_id,
+                            "depth": node.depth,
+                            "cg_iter": cg_iter,
+                            "lp_obj": info.obj_val,
+                            "cuts_added": cuts_added_this_iter,
+                            "new_columns": 0,
+                            "active_columns": len(rmp.vars),
+                        }
+                    )
+                    return float("inf"), False, [], {
+                        "cg_iters": cg_iter,
+                        "cuts_added": cuts_added_total,
+                        "new_cols": 0,
+                        "fail_stage": "after_cuts",
+                    }
 
         # Step C: pricing 子问题基于对偶寻找负化简成本列，增强 RMP。
         duals = rmp.extract_duals()
@@ -226,11 +255,20 @@ def _solve_node(
         "cg_iters": cg_iter,
         "cuts_added": cuts_added_total,
         "active_columns": len(rmp.vars),
+        "fail_stage": "",
     }
     return lp_obj, is_integer, selected, {"arc_flow": arc_flow, **node_stats}
 
 
-def solve_instance(instance_id: str, cfg: SolverConfig, db_path: str = "instances.db", csv_dir: str = "") -> SolveResult:
+def solve_instance(
+    instance_id: str,
+    cfg: SolverConfig,
+    db_path: str = "instances.db",
+    csv_dir: str = "",
+    excel_path: str = "",
+    preprocessed_path: str = "",
+    excel_profile_path: str = "",
+) -> SolveResult:
     """单实例求解入口。
 
     该函数实现完整 BCP 主循环：
@@ -241,7 +279,28 @@ def solve_instance(instance_id: str, cfg: SolverConfig, db_path: str = "instance
     - 达到停止条件后输出最优/当前最优。
     """
     t0 = time.time()
-    instance = load_instance(instance_id=instance_id, db_path=db_path, csv_dir=csv_dir)
+    bundle: ExcelInstanceBundle | None = None
+    if preprocessed_path:
+        bundle = load_preprocessed_bundle(preprocessed_path=preprocessed_path)
+        instance = bundle.instance
+    elif excel_path:
+        bundle = load_instance_bundle_from_excel(
+            xlsx_path=excel_path,
+            instance_id=instance_id,
+            customer_sheet_index=cfg.problem.customer_sheet_index,
+            depot_sheet_index=cfg.problem.depot_sheet_index,
+            customer_sheet_name=cfg.problem.customer_sheet_name,
+            depot_sheet_name=cfg.problem.depot_sheet_name,
+            vehicle_sheet_name=cfg.problem.vehicle_sheet_name,
+            override_vehicle_count=cfg.problem.vehicle_count,
+            allow_infeasible_vehicle_count=cfg.problem.allow_infeasible_vehicle_count,
+            override_capacity_u=cfg.problem.capacity_u,
+            override_range_q=cfg.problem.range_q,
+            override_cost_per_km=cfg.problem.cost_per_km,
+        )
+        instance = bundle.instance
+    else:
+        instance = load_instance(instance_id=instance_id, db_path=db_path, csv_dir=csv_dir)
 
     global_columns = generate_initial_columns(instance)
 
@@ -257,6 +316,7 @@ def solve_instance(instance_id: str, cfg: SolverConfig, db_path: str = "instance
     heapq.heappush(pq, (_node_priority(cfg.branch_strategy, 0.0, 0), root.node_id, root))
 
     nodes_processed = 0
+    fail_stage_counts: Dict[str, int] = {}
     while pq and nodes_processed < cfg.max_nodes:
         if time.time() - t0 > cfg.time_limit_s:
             break
@@ -270,6 +330,21 @@ def solve_instance(instance_id: str, cfg: SolverConfig, db_path: str = "instance
         nodes_processed += 1
 
         if not math.isfinite(lb):
+            fs = str(node_aux.get("fail_stage", "")).strip()
+            if fs:
+                fail_stage_counts[fs] = fail_stage_counts.get(fs, 0) + 1
+            if node_aux.get("fail_stage"):
+                trace_rows.append(
+                    {
+                        "node_id": node.node_id,
+                        "depth": node.depth,
+                        "cg_iter": -1,
+                        "lp_obj": lb,
+                        "cuts_added": node_aux.get("cuts_added", 0),
+                        "new_columns": node_aux.get("new_cols", 0),
+                        "active_columns": node_aux.get("active_columns", 0),
+                    }
+                )
             continue
 
         if lb < best_lb:
@@ -315,6 +390,9 @@ def solve_instance(instance_id: str, cfg: SolverConfig, db_path: str = "instance
         "global_columns": float(len(global_columns)),
         "best_lb": best_lb if math.isfinite(best_lb) else float("inf"),
     }
+    if fail_stage_counts:
+        stats["fail_after_cuts_nodes"] = float(fail_stage_counts.get("after_cuts", 0))
+        stats["fail_before_cuts_nodes"] = float(fail_stage_counts.get("solve_before_cuts", 0))
 
     result = SolveResult(
         status=status,
@@ -326,6 +404,9 @@ def solve_instance(instance_id: str, cfg: SolverConfig, db_path: str = "instance
     )
 
     outdir = _mkdir(cfg.output_dir)
+    if bundle is not None:
+        profile_out = excel_profile_path.strip() if excel_profile_path else str(outdir / "excel_model_profile.json")
+        dump_excel_model_profile(bundle, profile_out)
     _write_solution_json(outdir, result)
     _write_routes(outdir, result)
     _write_trace(outdir, trace_rows)
@@ -347,6 +428,10 @@ def _load_solver_config(cfg_path: str) -> SolverConfig:
         if k == "stabilization" and isinstance(v, dict):
             for sk, sv in v.items():
                 setattr(cfg.stabilization, sk, sv)
+        elif k == "problem" and isinstance(v, dict):
+            for pk, pv in v.items():
+                if hasattr(cfg.problem, pk):
+                    setattr(cfg.problem, pk, pv)
         elif hasattr(cfg, k):
             setattr(cfg, k, v)
     return cfg
@@ -370,13 +455,21 @@ def _load_batch_instances(db_path: str, batch_id: str) -> List[str]:
         conn.close()
 
 
-def run_experiment(batch_id: str, cfg_path: str, db_path: str = "instances.db", csv_dir: str = "") -> ExperimentReport:
+def run_experiment(
+    batch_id: str,
+    cfg_path: str,
+    db_path: str = "instances.db",
+    csv_dir: str = "",
+    rmp_solver_override: str = "",
+) -> ExperimentReport:
     """批量实验入口。
 
     对 batch 中每个实例调用 solve_instance，
     最终汇总平均目标值、平均 gap 并输出 report.json。
     """
     cfg = _load_solver_config(cfg_path)
+    if rmp_solver_override:
+        cfg.rmp_solver = rmp_solver_override
     instances = _load_batch_instances(db_path, batch_id)
     results: List[SolveResult] = []
 
@@ -414,6 +507,91 @@ def run_experiment(batch_id: str, cfg_path: str, db_path: str = "instances.db", 
             {
                 "batch_id": report.batch_id,
                 "summary": report.summary,
+                "results": [
+                    {
+                        "status": r.status,
+                        "obj_primal": r.obj_primal,
+                        "obj_dual": r.obj_dual,
+                        "gap": r.gap,
+                        "stats": r.stats,
+                    }
+                    for r in report.results
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return report
+
+
+def run_excel_experiment(
+    batch_id: str,
+    cfg_path: str,
+    excel_path: str = "",
+    preprocessed_path: str = "",
+    repeat: int = 1,
+    instance_prefix: str = "excel_inst",
+    rmp_solver_override: str = "",
+) -> ExperimentReport:
+    """Excel 实验入口。
+
+    场景：
+    - 仅有一个 xlsx 实例文件；
+    - 需要重复运行多次（不同随机种子）做实验统计。
+    """
+    if repeat <= 0:
+        raise ValueError(f"repeat must be positive, got {repeat}")
+    if not excel_path and not preprocessed_path:
+        raise ValueError("either excel_path or preprocessed_path must be provided")
+
+    cfg = _load_solver_config(cfg_path)
+    if rmp_solver_override:
+        cfg.rmp_solver = rmp_solver_override
+    results: List[SolveResult] = []
+
+    for idx in range(repeat):
+        outdir = Path(cfg.output_dir) / batch_id / f"run_{idx + 1:03d}"
+        cfg_i = SolverConfig(**{**cfg.__dict__})
+        cfg_i.stabilization = cfg.stabilization
+        cfg_i.output_dir = str(outdir)
+        cfg_i.random_seed = cfg.random_seed + idx
+        iid = f"{instance_prefix}_{idx + 1:03d}"
+        try:
+            res = solve_instance(iid, cfg_i, excel_path=excel_path, preprocessed_path=preprocessed_path)
+        except GurobiUnavailableError as exc:
+            res = SolveResult(
+                status="ERROR_GUROBI",
+                obj_primal=float("inf"),
+                obj_dual=float("inf"),
+                gap=float("inf"),
+                routes=[],
+                stats={"error": str(exc)},
+            )
+        results.append(res)
+
+    solved = [r for r in results if r.status in {"OPTIMAL", "TIME_LIMIT"}]
+    finite_primal = [r.obj_primal for r in solved if math.isfinite(r.obj_primal)]
+    finite_gap = [r.gap for r in solved if math.isfinite(r.gap)]
+    summary = {
+        "instances": float(len(results)),
+        "solved_like": float(len(solved)),
+        "avg_primal": sum(finite_primal) / max(1, len(finite_primal)),
+        "avg_gap": sum(finite_gap) / max(1, len(finite_gap)),
+    }
+
+    report = ExperimentReport(batch_id=batch_id, results=results, summary=summary)
+    out = Path(cfg.output_dir) / batch_id
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "report.json").write_text(
+        json.dumps(
+            {
+                "batch_id": report.batch_id,
+                "summary": report.summary,
+                "excel_path": excel_path,
+                "preprocessed_path": preprocessed_path,
+                "repeat": repeat,
                 "results": [
                     {
                         "status": r.status,

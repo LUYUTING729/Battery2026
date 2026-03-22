@@ -15,9 +15,16 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--db-path", default="instances.db")
     parser.add_argument("--csv-dir", default="")
+    parser.add_argument("--rmp-solver", default="", choices=["", "auto", "gurobi", "highs"])
     args = parser.parse_args()
 
-    report = run_experiment(args.batch_id, args.config, db_path=args.db_path, csv_dir=args.csv_dir)
+    report = run_experiment(
+        args.batch_id,
+        args.config,
+        db_path=args.db_path,
+        csv_dir=args.csv_dir,
+        rmp_solver_override=args.rmp_solver,
+    )
     print(json.dumps(report.summary, ensure_ascii=False))
 
 

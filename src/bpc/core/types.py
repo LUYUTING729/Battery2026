@@ -100,6 +100,21 @@ class StabilizationConfig:
 
 
 @dataclass
+class ProblemConfig:
+    """问题参数配置（覆盖实例原始数据）。"""
+    capacity_u: float = 0.0
+    range_q: float = 0.0
+    cost_per_km: float = 0.0
+    vehicle_count: int = 0
+    allow_infeasible_vehicle_count: bool = False
+    customer_sheet_name: str = ""
+    depot_sheet_name: str = ""
+    vehicle_sheet_name: str = ""
+    customer_sheet_index: int = 0
+    depot_sheet_index: int = 1
+
+
+@dataclass
 class SolverConfig:
     """求解器全局配置（算法开关、限制、阈值）。"""
     time_limit_s: float = 600.0
@@ -120,7 +135,9 @@ class SolverConfig:
     enable_clique: bool = True
     enable_sri: bool = True
     enable_stabilization: bool = True
+    rmp_solver: str = "auto"
     stabilization: StabilizationConfig = field(default_factory=StabilizationConfig)
+    problem: ProblemConfig = field(default_factory=ProblemConfig)
     output_dir: str = "outputs"
 
 
