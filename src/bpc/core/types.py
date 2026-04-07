@@ -135,7 +135,9 @@ class SolverConfig:
     enable_clique: bool = True
     enable_sri: bool = True
     enable_stabilization: bool = True
-    rmp_solver: str = "auto"
+    enable_integral_stall_early_stop: bool = False
+    rmp_solver: str = "gurobi"
+    initial_column_strategy: str = "greedy"
     stabilization: StabilizationConfig = field(default_factory=StabilizationConfig)
     problem: ProblemConfig = field(default_factory=ProblemConfig)
     output_dir: str = "outputs"
@@ -144,11 +146,20 @@ class SolverConfig:
 @dataclass
 class DualValues:
     """定价阶段使用的对偶容器。"""
+    @dataclass
+    class CutDualTerm:
+        cut_id: str
+        cut_type: str
+        dual: float
+        members: FrozenSet[str]
+        weights: Dict[str, float]
+
     cover_pi: Dict[str, float]
     vehicle_alpha: Dict[str, float]
     depot_beta: Dict[str, float]
     branch_arc_dual: Dict[Arc, float]
     clique_customer_bonus: Dict[str, float]
+    cut_terms: List["DualValues.CutDualTerm"] = field(default_factory=list)
 
 
 @dataclass

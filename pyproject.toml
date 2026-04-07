@@ -7,10 +7,7 @@ name = "mdvrp-bpc"
 version = "0.1.0"
 description = "Engineering BCP solver for MDVRP-RL"
 requires-python = ">=3.9"
-dependencies = []
-
-[project.optional-dependencies]
-highs = ["scipy>=1.10"]
+dependencies = ["gurobipy>=13.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

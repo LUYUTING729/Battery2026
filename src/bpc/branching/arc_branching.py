@@ -8,27 +8,38 @@ from __future__ import annotations
 - 左支: 禁用该弧（x_uv <= 0）；右支: 强制至少一次使用该弧（x_uv >= 1）。
 """
 
+import random
 from typing import Dict, Optional, Tuple
 
 from bpc.core.types import BranchRule, NodeState
 
 
-def pick_branch_arc(arc_flow: Dict[Tuple[str, str], float], tol: float = 1e-6) -> Optional[Tuple[str, str]]:
+def pick_branch_arc(
+    arc_flow: Dict[Tuple[str, str], float],
+    tol: float = 1e-6,
+    rng: Optional[random.Random] = None,
+) -> Optional[Tuple[str, str]]:
     """从分数弧中选分支弧。
 
     选择标准：|x_uv - 0.5| 最小（越接近 0.5 越不确定，分支收益通常更高）。
     """
-    candidate = None
-    best_dist = 1.0
+    candidates = []
+    best_dist = float("inf")
     for arc, value in arc_flow.items():
         frac = abs(value - round(value))
         if frac <= tol:
             continue
         dist = abs(value - 0.5)
-        if dist < best_dist:
+        if dist + 1e-12 < best_dist:
             best_dist = dist
-            candidate = arc
-    return candidate
+            candidates = [arc]
+        elif abs(dist - best_dist) <= 1e-12:
+            candidates.append(arc)
+    if not candidates:
+        return None
+    if rng is None or len(candidates) == 1:
+        return sorted(candidates)[0]
+    return candidates[rng.randrange(len(candidates))]
 
 
 def split_node(parent: NodeState, arc: Tuple[str, str], left_id: int, right_id: int) -> Tuple[NodeState, NodeState]:

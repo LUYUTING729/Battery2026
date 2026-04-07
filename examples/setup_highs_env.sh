@@ -8,15 +8,15 @@ source .venv/bin/activate
 # 升级基础工具
 python -m pip install -U pip setuptools wheel
 
-# 安装本项目 + HiGHS(Scipy backend)
-python -m pip install -e ".[highs]"
+# 安装本项目（Gurobi backend）
+python -m pip install -e .
 
-# 快速验证：是否可导入 scipy，并打印版本
+# 快速验证：是否可导入 gurobipy，并打印版本
 python - <<'PY'
-import scipy
-print('scipy version:', scipy.__version__)
+import gurobipy as gp
+print('gurobi version:', gp.gurobi.version())
 PY
 
 echo "Use this interpreter to run solver:"
 echo "  PYTHONPATH=src .venv/bin/python -m bpc.cli.solve --help"
-echo "HiGHS backend environment is ready."
+echo "Gurobi backend environment is ready."

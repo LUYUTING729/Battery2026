@@ -15,7 +15,7 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--db-path", default="instances.db")
     parser.add_argument("--csv-dir", default="")
-    parser.add_argument("--rmp-solver", default="", choices=["", "auto", "gurobi", "highs"])
+    parser.add_argument("--rmp-solver", default="", choices=["", "gurobi"])
     args = parser.parse_args()
 
     report = run_experiment(

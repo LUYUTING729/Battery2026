@@ -55,16 +55,11 @@ CREATE TABLE batch_instances (
 - `dist_matrix.csv`: `from,to,value`
 
 ## Quick Start
-Install open-source HiGHS backend (via SciPy):
+Install Gurobi backend:
 
 ```bash
-python3 -m pip install -U scipy
-```
-
-Or install project extras:
-
-```bash
-python3 -m pip install -e ".[highs]"
+python3 -m pip install -U gurobipy
+python3 -m pip install -e .
 ```
 
 Run unit tests:
@@ -79,14 +74,14 @@ Solve one instance:
 PYTHONPATH=src .venv/bin/python -m bpc.cli.solve \
   --instance-id instA \
   --db-path instances.db \
-  --rmp-solver highs \
+  --rmp-solver gurobi \
   --config configs/default.json \
   --output-dir outputs/instA
 ```
 
 Choose RMP backend in config/CLI:
-- config: set `rmp_solver` to `auto` / `gurobi` / `highs`
-- CLI override: `--rmp-solver highs`
+- config: set `rmp_solver` to `gurobi`
+- CLI override: `--rmp-solver gurobi`
 
 Problem parameters can be configured in `configs/*.json` under `problem`, e.g.:
 
@@ -150,7 +145,7 @@ PYTHONPATH=src .venv/bin/python -m bpc.cli.solve \
   --instance-id stations_cached \
   --preprocessed-path outputs/stations_cached/preprocessed_instance.json \
   --config configs/default.json \
-  --rmp-solver highs \
+  --rmp-solver gurobi \
   --output-dir outputs/stations_cached/solve_from_cache
 ```
 

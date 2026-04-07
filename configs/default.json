@@ -16,10 +16,11 @@
   "enable_rcc": true,
   "enable_clique": false,
   "enable_sri": true,
-  "rmp_solver": "auto",
+  "rmp_solver": "gurobi",
+  "initial_column_strategy": "clarke_wright",
   "problem": {
 
-    "capacity_u": 1000.0,
+    "capacity_u": 500.0,
     "range_q": 500.0,
     "cost_per_km": 1.0,
     "vehicle_count": 10,

@@ -39,11 +39,81 @@ def _instance():
     )
 
 
+def _instance_multi_vehicle():
+    customers = {
+        "c1": Customer("c1", 1.0),
+        "c2": Customer("c2", 1.0),
+        "c3": Customer("c3", 1.0),
+        "c4": Customer("c4", 1.0),
+    }
+    depots = {"d1": Depot("d1", 2)}
+    vehicles = {"v1": Vehicle("v1", "o1"), "v2": Vehicle("v2", "o2")}
+    cost = {
+        ("o1", "d1"): 1,
+        ("o2", "d1"): 1,
+        ("d1", "c1"): 1,
+        ("d1", "c2"): 1,
+        ("d1", "c3"): 1,
+        ("d1", "c4"): 1,
+        ("c1", "d1"): 1,
+        ("c2", "d1"): 1,
+        ("c3", "d1"): 1,
+        ("c4", "d1"): 1,
+        ("c1", "c2"): 1,
+        ("c1", "c3"): 1,
+        ("c1", "c4"): 1,
+        ("c2", "c1"): 1,
+        ("c2", "c3"): 1,
+        ("c2", "c4"): 1,
+        ("c3", "c1"): 1,
+        ("c3", "c2"): 1,
+        ("c3", "c4"): 1,
+        ("c4", "c1"): 1,
+        ("c4", "c2"): 1,
+        ("c4", "c3"): 1,
+    }
+    dist = cost.copy()
+    arcs = set(cost.keys())
+    return InstanceData(
+        instance_id="inst2",
+        customers=customers,
+        depots=depots,
+        vehicles=vehicles,
+        demand={cid: 1.0 for cid in customers},
+        capacity_u=10.0,
+        range_q=50.0,
+        cost=cost,
+        dist=dist,
+        dispatch_cost={("v1", "d1"): 1, ("v2", "d1"): 1},
+        arcs=arcs,
+    )
+
+
 class TestPricingAndCuts(unittest.TestCase):
     def test_generate_initial_columns(self):
         ins = _instance()
         cols = generate_initial_columns(ins)
         self.assertTrue(len(cols) >= 2)
+
+    def test_generate_initial_columns_equal_split_by_vehicle(self):
+        ins = _instance_multi_vehicle()
+        cols = generate_initial_columns(ins, strategy="equal_split_by_vehicle")
+        self.assertTrue(len(cols) >= 2)
+        cnt_by_vehicle = {"v1": 0, "v2": 0}
+        for c in cols:
+            cnt_by_vehicle[c.vehicle_id] += 1
+        self.assertLessEqual(abs(cnt_by_vehicle["v1"] - cnt_by_vehicle["v2"]), 1)
+
+    def test_generate_initial_columns_clarke_wright(self):
+        ins = _instance()
+        cols = generate_initial_columns(ins, strategy="clarke_wright")
+        self.assertTrue(len(cols) >= 1)
+        self.assertTrue(any(len(c.customer_seq) >= 2 for c in cols))
+
+    def test_generate_initial_columns_clarke_wright_alias(self):
+        ins = _instance()
+        cols = generate_initial_columns(ins, strategy="clarke_and_wright")
+        self.assertTrue(len(cols) >= 1)
 
     def test_price_columns_negative(self):
         ins = _instance()

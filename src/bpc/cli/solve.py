@@ -40,7 +40,7 @@ def main() -> None:
     parser.add_argument("--excel-path", default="")
     parser.add_argument("--preprocessed-path", default="")
     parser.add_argument("--excel-profile-path", default="")
-    parser.add_argument("--rmp-solver", default="", choices=["", "auto", "gurobi", "highs"])
+    parser.add_argument("--rmp-solver", default="", choices=["", "gurobi"])
     parser.add_argument("--config", default="")
     parser.add_argument("--output-dir", default="outputs")
     args = parser.parse_args()

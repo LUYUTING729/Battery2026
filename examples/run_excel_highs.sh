@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 固定使用项目虚拟环境解释器，避免调用系统 python 导致找不到 scipy。
+# 固定使用项目虚拟环境解释器。
 PY="${PY:-.venv/bin/python}"
 if [[ ! -x "$PY" ]]; then
   echo "Python not found at $PY"
@@ -18,5 +18,5 @@ PYTHONPATH=src "$PY" -m bpc.cli.solve \
   --instance-id "$INSTANCE_ID" \
   --excel-path "$EXCEL_PATH" \
   --config "$CONFIG_PATH" \
-  --rmp-solver highs \
+  --rmp-solver gurobi \
   --output-dir "$OUTPUT_DIR"

@@ -16,7 +16,7 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--instance-prefix", default="excel_inst")
-    parser.add_argument("--rmp-solver", default="", choices=["", "auto", "gurobi", "highs"])
+    parser.add_argument("--rmp-solver", default="", choices=["", "gurobi"])
     args = parser.parse_args()
     if not args.excel_path and not args.preprocessed_path:
         raise ValueError("either --excel-path or --preprocessed-path is required")
