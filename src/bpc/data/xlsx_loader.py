@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import warnings
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -343,6 +344,8 @@ def load_instance_bundle_from_excel(
 
     vehicles: Dict[str, Vehicle] = {}
     vehicle_origin_xy: Dict[str, Tuple[float, float]] = {}
+    explicit_vehicle_rows = 0
+    vehicle_override_warning = ""
     if v_rows and v_lon_i is not None and v_lat_i is not None:
         parsed_vehicle_rows: List[Tuple[str, float, float]] = []
         for i, row in enumerate(v_rows[1:], start=1):
@@ -353,6 +356,7 @@ def load_instance_bundle_from_excel(
             lat = _parse_number(row[v_lat_i] if v_lat_i < len(row) else "", field="vehicle lat")
             parsed_vehicle_rows.append((raw_vid, lon, lat))
 
+        explicit_vehicle_rows = len(parsed_vehicle_rows)
         if override_vehicle_count > 0:
             parsed_vehicle_rows = parsed_vehicle_rows[:override_vehicle_count]
         for i, (raw_vid, lon, lat) in enumerate(parsed_vehicle_rows, start=1):
@@ -379,6 +383,14 @@ def load_instance_bundle_from_excel(
                 vehicles[vid] = Vehicle(vehicle_id=vid, origin=origin)
                 vehicle_origin_xy[origin] = depot_xy[origin]
             vehicle_count = len(vehicles)
+
+    if explicit_vehicle_rows > 0 and override_vehicle_count > 0 and override_vehicle_count != explicit_vehicle_rows:
+        vehicle_override_warning = (
+            "override_vehicle_count differs from Vehicle_data row count: "
+            f"override={override_vehicle_count}, explicit_rows={explicit_vehicle_rows}. "
+            "Loader will keep explicit vehicle origins for parsed rows and synthesize or truncate vehicles to match the override."
+        )
+        warnings.warn(vehicle_override_warning, RuntimeWarning)
 
     if not has_explicit_depot_capacity:
         base = vehicle_count // len(depot_ids)
@@ -480,6 +492,7 @@ def load_instance_bundle_from_excel(
             "range_q": range_q,
             "cost_per_km": cost_per_km,
             "vehicle_count": vehicle_count,
+            "explicit_vehicle_rows": explicit_vehicle_rows,
             "min_required_vehicles_by_capacity": min_required_vehicles,
             "num_customers": len(customers),
             "num_depots": len(depots),
@@ -503,7 +516,9 @@ def load_instance_bundle_from_excel(
             "customer_demand_defaults_used": any(abs(v - default_demand) < 1e-12 for v in demand.values()),
             "vehicle_count_overridden": override_vehicle_count > 0,
             "vehicle_sheet_used": bool(v_rows),
+            "synthetic_vehicles_added": max(0, vehicle_count - explicit_vehicle_rows),
         },
+        "warnings": [vehicle_override_warning] if vehicle_override_warning else [],
     }
 
     return ExcelInstanceBundle(instance=instance, model_profile=profile)

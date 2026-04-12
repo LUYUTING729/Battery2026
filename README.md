@@ -169,3 +169,23 @@ Or:
 ```bash
 bash examples/minimal/run_one_click.sh
 ```
+
+Direct Gurobi SCF solve from `main.tex` model:
+
+```bash
+PYTHONPATH=src python3 -m gurobi.cli.solve \
+  --instance-id inst_tiny \
+  --db-path examples/minimal/instances.db \
+  --config configs/default.json \
+  --output-dir outputs/inst_tiny_gurobi
+```
+
+Solve directly from Excel with the same input style as `bpc.cli.solve`:
+
+```bash
+PYTHONPATH=src python3 -m gurobi.cli.solve \
+  --instance-id data2_case_local \
+  --excel-path src/bpc/data/data2.xlsx \
+  --config configs/default.json \
+  --output-dir outputs/data2_case/gurobi_direct
+```

@@ -29,6 +29,17 @@ class RmpSolveInfo:
     lambda_values: Dict[str, float]
 
 
+@dataclass
+class RestrictedMipResult:
+    """当前列池上的整数 restricted master 求解结果。"""
+
+    feasible: bool
+    obj_val: float
+    routes: List[RouteColumn]
+    artificial_violation: float
+    status: int
+
+
 class MasterProblem:
     """RMP 封装（Gurobi）。"""
 
@@ -189,6 +200,36 @@ class MasterProblem:
         values = {cid: var.X for cid, var in self.vars.items()}
         self._lambda_values = values
         return RmpSolveInfo(status=status, obj_val=float(self.model.ObjVal), lambda_values=values)
+
+    def solve_restricted_mip(self, time_limit_s: float = 5.0) -> RestrictedMipResult:
+        """在当前列池与当前 cuts 上解一个整数 restricted master。"""
+        mip = MasterProblem(self.instance, self.node, relax=False, solver_backend=self.solver_backend)
+        mip.model.Params.OutputFlag = 0
+        if time_limit_s > 0:
+            mip.model.Params.TimeLimit = max(0.01, float(time_limit_s))
+        mip.add_columns(list(self.columns.values()))
+        if self.cuts:
+            mip.add_cuts([cut for cut, _ in self.cuts.values()])
+        info = mip.solve()
+        if info.obj_val == float("inf"):
+            return RestrictedMipResult(
+                feasible=False,
+                obj_val=float("inf"),
+                routes=[],
+                artificial_violation=float("inf"),
+                status=info.status,
+            )
+        art_violation = mip.artificial_violation()
+        routes = mip.selected_routes(threshold=0.5)
+        feasible = mip.is_integral() and art_violation <= 1e-6
+        obj_val = sum(route.cost for route in routes) if feasible else float("inf")
+        return RestrictedMipResult(
+            feasible=feasible,
+            obj_val=obj_val,
+            routes=routes if feasible else [],
+            artificial_violation=art_violation,
+            status=info.status,
+        )
 
     def is_integral(self, tol: float = 1e-6) -> bool:
         # 无可用 primal 解时，X/Pi 等属性不可访问；按“非整数（不可用于分支收敛）”处理。

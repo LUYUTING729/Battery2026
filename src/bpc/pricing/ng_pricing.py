@@ -89,6 +89,41 @@ def _completion_lb(instance: InstanceData, curr: str, depot: str) -> float:
     return instance.cost.get((curr, depot), float("inf"))
 
 
+def _future_dual_gain_upper_bound(
+    instance: InstanceData,
+    duals: DualValues,
+    remaining_customers: Set[str],
+    remaining_capacity: float,
+) -> float:
+    """剩余客户可贡献的对偶收益上界。
+
+    该上界故意取保守值：按剩余容量最多还能容纳多少客户，
+    累加剩余客户中最大的正收益项（cover dual + clique bonus）。
+    这样不会错剪，只是剪枝力度偏温和。
+    """
+    if remaining_capacity <= 1e-9 or not remaining_customers:
+        return 0.0
+
+    positive_gains = [
+        max(0.0, duals.cover_pi.get(cid, 0.0) + duals.clique_customer_bonus.get(cid, 0.0))
+        for cid in remaining_customers
+    ]
+    positive_gains = [x for x in positive_gains if x > 1e-12]
+    if not positive_gains:
+        return 0.0
+
+    min_demand = min(instance.demand[cid] for cid in remaining_customers)
+    if min_demand <= 1e-12:
+        max_additional_customers = len(positive_gains)
+    else:
+        max_additional_customers = min(len(positive_gains), int(remaining_capacity // min_demand))
+    if max_additional_customers <= 0:
+        return 0.0
+
+    positive_gains.sort(reverse=True)
+    return sum(positive_gains[:max_additional_customers])
+
+
 def _route_from_label(
     instance: InstanceData,
     duals: DualValues,
@@ -191,6 +226,23 @@ def _price_for_vehicle_depot(
                 nrc -= duals.cover_pi[nxt]
                 nrc -= duals.clique_customer_bonus.get(nxt, 0.0)
 
+            remaining_customers = set(instance.customers.keys()) - current_customers - {nxt}
+            remaining_capacity = instance.capacity_u - nload
+            optimistic_future_gain = _future_dual_gain_upper_bound(
+                instance,
+                duals,
+                remaining_customers,
+                remaining_capacity,
+            )
+            best_possible_final_rc = (
+                nrc
+                + instance.cost.get((nxt, depot_id), float("inf"))
+                - duals.branch_arc_dual.get((nxt, depot_id), 0.0)
+                - optimistic_future_gain
+            )
+            if best_possible_final_rc >= -1e-9:
+                continue
+
             memory = frozenset((set(cur.memory).intersection(ng_neighbors[nxt])) | {nxt})
             visited = cur.visited + ((nxt,) if nxt not in current_customers else tuple())
             lbl = Label(key=nrc, node=nxt, rc=nrc, load=nload, dist=ndist, memory=memory, visited=visited)
@@ -219,14 +271,24 @@ def _price_for_vehicle_depot(
     return list(best_routes.values())
 
 
+def build_ng_neighbors(instance: InstanceData, ng_size: int) -> Dict[str, Set[str]]:
+    """预构造 ng 邻域，供外部缓存后传入 price_columns。"""
+    return _neighbors_by_distance(instance, ng_size)
+
+
 def price_columns(
     instance: InstanceData,
     node: NodeState,
     duals: DualValues,
     cfg: SolverConfig,
+    ng_neighbors: Optional[Dict[str, Set[str]]] = None,
 ) -> List[RouteColumn]:
-    """定价总入口：遍历全部 (vehicle, depot) 子问题并汇总新列。"""
-    ng_neighbors = _neighbors_by_distance(instance, cfg.ng_size)
+    """定价总入口：遍历全部 (vehicle, depot) 子问题并汇总新列。
+
+    ng_neighbors 若由外部传入则直接使用，否则临时计算（兼容旧调用）。
+    """
+    if ng_neighbors is None:
+        ng_neighbors = _neighbors_by_distance(instance, cfg.ng_size)
     out: Dict[str, RouteColumn] = {}
     for vid in instance.vehicles:
         for did in instance.depots:

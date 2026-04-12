@@ -1,13 +1,13 @@
 {
-  "time_limit_s": 300,
+  "time_limit_s": 3000,
   "mip_gap": 0.001,
   "max_nodes": 300,
   "max_cg_iters": 120,
-  "max_new_columns_per_iter": 20,
+  "max_new_columns_per_iter": 40,
   "pricing_rc_epsilon": 1e-6,
   "ng_size": 10,
   "k_cycle": 2,
-  "cut_violation_tol": 1e-6,
+  "cut_violation_tol": 1e-4,
   "max_cuts_per_round": 20,
   "cut_rounds_root": 3,
   "cut_rounds_node": 1,
@@ -18,12 +18,14 @@
   "enable_sri": true,
   "rmp_solver": "gurobi",
   "initial_column_strategy": "clarke_wright",
+  "initial_depot_candidates_per_vehicle": 2,
+  "pricing_depot_candidates_per_vehicle": 3,
   "problem": {
 
     "capacity_u": 500.0,
     "range_q": 500.0,
     "cost_per_km": 1.0,
-    "vehicle_count": 10,
+    "vehicle_count": 0,
     "customer_sheet_name": "BSS_data",
     "depot_sheet_name": "Charging_data",
     "vehicle_sheet_name": "Vehicle_data"

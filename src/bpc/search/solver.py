@@ -22,7 +22,7 @@ import sqlite3
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from bpc.branching.arc_branching import pick_branch_arc, split_node
 from bpc.core.types import ExperimentReport, InstanceData, NodeState, SolveResult, SolverConfig
@@ -35,7 +35,7 @@ from bpc.data.xlsx_loader import (
     load_preprocessed_bundle,
 )
 from bpc.pricing.initializer import generate_initial_columns
-from bpc.pricing.ng_pricing import price_columns
+from bpc.pricing.ng_pricing import build_ng_neighbors, price_columns
 from bpc.rmp.master_problem import GurobiUnavailableError, MasterProblem
 
 TRACE_V1_FIELDS = [
@@ -578,6 +578,8 @@ def _solve_node(
     realtime_writer: _RealtimeRunWriter | None = None,
     run_start_time: float | None = None,
     incumbent_value: float = float("inf"),
+    incumbent_callback: Callable[[List, float, str, int, int], float] | None = None,
+    ng_neighbors=None,
 ) -> Tuple[float, bool, List, Dict]:
     """求解单个 BCP 树节点。
 
@@ -608,10 +610,39 @@ def _solve_node(
     cut_sep_calls = 0
     pricing_calls = 0
     pricing_negative_found_calls = 0
+    restricted_master_heur_calls = 0
+    restricted_master_heur_hits = 0
+    restricted_master_heur_time_sec = 0.0
     rmp_time_sec = 0.0
     cut_sep_time_sec = 0.0
     pricing_time_sec = 0.0
     best_root_lp_seen = float("inf")
+
+    def _run_restricted_master_heuristic(trigger: str) -> None:
+        nonlocal incumbent_value
+        nonlocal restricted_master_heur_calls
+        nonlocal restricted_master_heur_hits
+        nonlocal restricted_master_heur_time_sec
+        if not cfg.enable_restricted_master_heuristic:
+            return
+        if len(rmp.vars) == 0:
+            return
+        restricted_master_heur_calls += 1
+        t_heur = time.time()
+        heur = rmp.solve_restricted_mip(time_limit_s=cfg.restricted_master_heuristic_time_limit_s)
+        restricted_master_heur_time_sec += time.time() - t_heur
+        if not heur.feasible:
+            return
+        restricted_master_heur_hits += 1
+        if incumbent_callback is not None:
+            incumbent_value = incumbent_callback(
+                heur.routes,
+                heur.obj_val,
+                f"restricted_master_{trigger}",
+                node.node_id,
+                node.depth,
+            )
+
     while cg_iter < cfg.max_cg_iters:
         t_iter0 = time.time()
         cg_iter += 1
@@ -637,6 +668,9 @@ def _solve_node(
                 "cut_sep_calls": cut_sep_calls,
                 "pricing_calls": pricing_calls,
                 "pricing_negative_found_calls": pricing_negative_found_calls,
+                "restricted_master_heur_calls": restricted_master_heur_calls,
+                "restricted_master_heur_hits": restricted_master_heur_hits,
+                "restricted_master_heur_time_sec": restricted_master_heur_time_sec,
                 "rmp_time_sec": rmp_time_sec,
                 "cut_sep_time_sec": cut_sep_time_sec,
                 "pricing_time_sec": pricing_time_sec,
@@ -749,6 +783,9 @@ def _solve_node(
                         "cut_sep_calls": cut_sep_calls,
                         "pricing_calls": pricing_calls,
                         "pricing_negative_found_calls": pricing_negative_found_calls,
+                        "restricted_master_heur_calls": restricted_master_heur_calls,
+                        "restricted_master_heur_hits": restricted_master_heur_hits,
+                        "restricted_master_heur_time_sec": restricted_master_heur_time_sec,
                         "rmp_time_sec": rmp_time_sec,
                         "cut_sep_time_sec": cut_sep_time_sec,
                         "pricing_time_sec": pricing_time_sec,
@@ -760,7 +797,7 @@ def _solve_node(
         # Step C: pricing 子问题基于对偶寻找负化简成本列，增强 RMP。
         duals = rmp.extract_duals()
         t_pricing = time.time()
-        new_columns = price_columns(instance, node, duals, cfg)
+        new_columns = price_columns(instance, node, duals, cfg, ng_neighbors=ng_neighbors)
         pricing_time_sec += time.time() - t_pricing
         pricing_calls += 1
         if new_columns:
@@ -840,6 +877,14 @@ def _solve_node(
                     }
                 )
 
+        if (
+            not iter_integral
+            and cfg.enable_restricted_master_heuristic
+            and cfg.restricted_master_heuristic_frequency > 0
+            and (cg_iter % cfg.restricted_master_heuristic_frequency == 0 or new_added == 0)
+        ):
+            _run_restricted_master_heuristic("iter")
+
         if new_added == 0:
             # 无新列 -> 节点 LP 在当前列空间内稳定。
             break
@@ -869,6 +914,9 @@ def _solve_node(
         "cut_sep_calls": cut_sep_calls,
         "pricing_calls": pricing_calls,
         "pricing_negative_found_calls": pricing_negative_found_calls,
+        "restricted_master_heur_calls": restricted_master_heur_calls,
+        "restricted_master_heur_hits": restricted_master_heur_hits,
+        "restricted_master_heur_time_sec": restricted_master_heur_time_sec,
         "rmp_time_sec": rmp_time_sec,
         "cut_sep_time_sec": cut_sep_time_sec,
         "pricing_time_sec": pricing_time_sec,
@@ -925,7 +973,13 @@ def solve_instance(
     realtime_writer = _RealtimeRunWriter(output_dir=outdir, instance_id=instance.instance_id)
     _write_run_config(outdir, instance.instance_id, cfg)
 
-    global_columns = generate_initial_columns(instance)
+    # 预计算 ng 邻域，在整个求解过程中复用，避免每次定价重复计算。
+    ng_neighbors_cache = build_ng_neighbors(instance, cfg.ng_size)
+
+    global_columns = generate_initial_columns(
+        instance,
+        strategy=cfg.initial_column_strategy,
+    )
 
     root = NodeState(node_id=0, depth=0)
     pq = []
@@ -952,13 +1006,45 @@ def solve_instance(
     rmp_solve_calls_total = 0
     cut_sep_calls_total = 0
     pricing_calls_total = 0
+    restricted_master_heur_calls_total = 0
+    restricted_master_heur_hits_total = 0
     time_rmp_sec_total = 0.0
     time_cut_sep_sec_total = 0.0
     time_pricing_sec_total = 0.0
+    time_restricted_master_heur_sec_total = 0.0
     time_branch_sec_total = 0.0
     first_feasible_ts = float("inf")
     best_incumbent_ts = float("inf")
     fail_stage_counts: Dict[str, int] = {}
+
+    def _try_update_incumbent(routes, obj: float, reason: str, node_id: int, depth: int) -> float:
+        nonlocal incumbent
+        nonlocal incumbent_routes
+        nonlocal first_feasible_ts
+        nonlocal best_incumbent_ts
+        if not math.isfinite(obj) or obj >= incumbent - 1e-9:
+            return incumbent
+        old_ub = incumbent
+        incumbent = obj
+        incumbent_routes = routes
+        elapsed = time.time() - t0
+        if first_feasible_ts == float("inf"):
+            first_feasible_ts = elapsed
+        best_incumbent_ts = elapsed
+        incumbent_row = {
+            "instance_id": instance.instance_id,
+            "node_id": node_id,
+            "depth": depth,
+            "update_reason": reason,
+            "old_ub": old_ub,
+            "new_ub": incumbent,
+            "improvement": (old_ub - incumbent) if math.isfinite(old_ub) else float("inf"),
+            "global_time_sec": elapsed,
+            "route_count": len(routes),
+        }
+        incumbent_rows.append(incumbent_row)
+        realtime_writer.append_incumbent_update(incumbent_row)
+        return incumbent
 
     def _emit_running_summary() -> None:
         cur_gap = _safe_gap(incumbent, best_lb) if incumbent < float("inf") and math.isfinite(best_lb) else float("inf")
@@ -995,9 +1081,11 @@ def solve_instance(
                 "fail_infeasible_by_columns_nodes": float(fail_stage_counts.get("infeasible_by_columns", 0)),
             }
         )
+    exit_reason = "exhausted"  # 默认：搜索树全部展开
     while pq and nodes_processed < cfg.max_nodes:
         max_open_nodes = max(max_open_nodes, len(pq))
         if time.time() - t0 > cfg.time_limit_s:
+            exit_reason = "time_limit"
             break
 
         # 取下一个待处理节点（best-bound 或 depth-first）。
@@ -1018,6 +1106,8 @@ def solve_instance(
             realtime_writer=realtime_writer,
             run_start_time=t0,
             incumbent_value=incumbent,
+            incumbent_callback=_try_update_incumbent,
+            ng_neighbors=ng_neighbors_cache,
         )
         nodes_processed += 1
         node_runtime_sec = time.time() - node_start
@@ -1025,9 +1115,12 @@ def solve_instance(
         rmp_solve_calls_total += int(node_aux.get("rmp_solve_calls", 0))
         cut_sep_calls_total += int(node_aux.get("cut_sep_calls", 0))
         pricing_calls_total += int(node_aux.get("pricing_calls", 0))
+        restricted_master_heur_calls_total += int(node_aux.get("restricted_master_heur_calls", 0))
+        restricted_master_heur_hits_total += int(node_aux.get("restricted_master_heur_hits", 0))
         time_rmp_sec_total += float(node_aux.get("rmp_time_sec", 0.0))
         time_cut_sep_sec_total += float(node_aux.get("cut_sep_time_sec", 0.0))
         time_pricing_sec_total += float(node_aux.get("pricing_time_sec", 0.0))
+        time_restricted_master_heur_sec_total += float(node_aux.get("restricted_master_heur_time_sec", 0.0))
 
         prune_reason = ""
         if not math.isfinite(lb):
@@ -1101,27 +1194,7 @@ def solve_instance(
         if is_integer:
             # 节点 LP 已整数，可形成可行解并尝试更新 incumbent。
             obj = sum(r.cost for r in routes)
-            if obj < incumbent:
-                old_ub = incumbent
-                incumbent = obj
-                incumbent_routes = routes
-                elapsed = time.time() - t0
-                if first_feasible_ts == float("inf"):
-                    first_feasible_ts = elapsed
-                best_incumbent_ts = elapsed
-                incumbent_row = {
-                    "instance_id": instance.instance_id,
-                    "node_id": node.node_id,
-                    "depth": node.depth,
-                    "update_reason": "integer_node",
-                    "old_ub": old_ub,
-                    "new_ub": incumbent,
-                    "improvement": (old_ub - incumbent) if math.isfinite(old_ub) else float("inf"),
-                    "global_time_sec": elapsed,
-                    "route_count": len(routes),
-                }
-                incumbent_rows.append(incumbent_row)
-                realtime_writer.append_incumbent_update(incumbent_row)
+            incumbent = _try_update_incumbent(routes, obj, "integer_node", node.node_id, node.depth)
             node_row = {
                 "instance_id": instance.instance_id,
                 "node_id": node.node_id,
@@ -1340,11 +1413,17 @@ def solve_instance(
             gap = _safe_gap(incumbent, best_lb)
             if gap <= cfg.mip_gap:
                 # 达到目标 gap 提前结束。
+                exit_reason = "gap_limit"
                 break
+        if nodes_processed >= cfg.max_nodes:
+            exit_reason = "node_limit"
 
-    status = "OPTIMAL" if not pq and incumbent < float("inf") else "TIME_LIMIT"
     if incumbent == float("inf"):
         status = "NO_SOLUTION"
+    elif exit_reason in ("exhausted", "gap_limit"):
+        status = "OPTIMAL"
+    else:
+        status = "TIME_LIMIT"
 
     gap = _safe_gap(incumbent, best_lb) if incumbent < float("inf") and math.isfinite(best_lb) else float("inf")
     total_runtime_sec = time.time() - t0
@@ -1365,6 +1444,9 @@ def solve_instance(
         "rmp_solve_calls_total": float(rmp_solve_calls_total),
         "cuts_separation_calls_total": float(cut_sep_calls_total),
         "pricing_calls_total": float(pricing_calls_total),
+        "restricted_master_heur_calls_total": float(restricted_master_heur_calls_total),
+        "restricted_master_heur_hits_total": float(restricted_master_heur_hits_total),
+        "time_restricted_master_heur_sec": time_restricted_master_heur_sec_total,
         "time_rmp_sec": time_rmp_sec_total,
         "time_cut_sep_sec": time_cut_sep_sec_total,
         "time_pricing_sec": time_pricing_sec_total,

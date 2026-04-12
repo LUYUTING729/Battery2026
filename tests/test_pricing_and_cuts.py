@@ -89,6 +89,39 @@ def _instance_multi_vehicle():
     )
 
 
+def _instance_two_customer_synergy():
+    customers = {
+        "c1": Customer("c1", 1.0),
+        "c2": Customer("c2", 1.0),
+    }
+    depots = {"d1": Depot("d1", 1)}
+    vehicles = {"v1": Vehicle("v1", "o1")}
+    cost = {
+        ("o1", "d1"): 0,
+        ("d1", "c1"): 2,
+        ("c1", "d1"): 2,
+        ("d1", "c2"): 2,
+        ("c2", "d1"): 2,
+        ("c1", "c2"): 1,
+        ("c2", "c1"): 1,
+    }
+    dist = cost.copy()
+    arcs = set(cost.keys())
+    return InstanceData(
+        instance_id="inst_synergy",
+        customers=customers,
+        depots=depots,
+        vehicles=vehicles,
+        demand={"c1": 1.0, "c2": 1.0},
+        capacity_u=3.0,
+        range_q=10.0,
+        cost=cost,
+        dist=dist,
+        dispatch_cost={("v1", "d1"): 0},
+        arcs=arcs,
+    )
+
+
 class TestPricingAndCuts(unittest.TestCase):
     def test_generate_initial_columns(self):
         ins = _instance()
@@ -128,6 +161,21 @@ class TestPricingAndCuts(unittest.TestCase):
         cfg = SolverConfig(max_new_columns_per_iter=5)
         cols = price_columns(ins, node, duals, cfg)
         self.assertTrue(len(cols) >= 1)
+
+    def test_price_columns_keeps_synergy_route(self):
+        ins = _instance_two_customer_synergy()
+        node = NodeState(node_id=0, depth=0, branch_rule=BranchRule())
+        duals = DualValues(
+            cover_pi={"c1": 3.0, "c2": 3.0},
+            vehicle_alpha={"v1": 0.0},
+            depot_beta={"d1": 0.0},
+            branch_arc_dual={},
+            clique_customer_bonus={"c1": 0.0, "c2": 0.0},
+        )
+        cfg = SolverConfig(max_new_columns_per_iter=5)
+        cols = price_columns(ins, node, duals, cfg)
+        served_sets = {tuple(col.customer_seq) for col in cols}
+        self.assertIn(("c1", "c2"), served_sets)
 
     def test_cut_separation_runs(self):
         ins = _instance()

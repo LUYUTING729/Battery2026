@@ -136,6 +136,9 @@ class SolverConfig:
     enable_sri: bool = True
     enable_stabilization: bool = True
     enable_integral_stall_early_stop: bool = False
+    enable_restricted_master_heuristic: bool = True
+    restricted_master_heuristic_frequency: int = 10
+    restricted_master_heuristic_time_limit_s: float = 5.0
     rmp_solver: str = "gurobi"
     initial_column_strategy: str = "greedy"
     stabilization: StabilizationConfig = field(default_factory=StabilizationConfig)

@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 
 from bpc.data.xlsx_loader import (
@@ -53,6 +54,22 @@ class TestPreprocessedBundle(unittest.TestCase):
                 instance_id="stations_bad_v5",
                 override_vehicle_count=5,
             )
+
+    def test_override_vehicle_count_warns_when_vehicle_sheet_rows_differ(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            bundle = load_instance_bundle_from_excel(
+                xlsx_path="src/bpc/data/data2.xlsx",
+                instance_id="data2_v10",
+                vehicle_sheet_name="Vehicle_data",
+                override_vehicle_count=10,
+            )
+
+        self.assertEqual(len(bundle.instance.vehicles), 10)
+        self.assertEqual(bundle.model_profile["resolved_values"]["explicit_vehicle_rows"], 5)
+        self.assertEqual(bundle.model_profile["missing_data_filled"]["synthetic_vehicles_added"], 5)
+        self.assertTrue(bundle.model_profile["warnings"])
+        self.assertTrue(any("override_vehicle_count differs from Vehicle_data row count" in str(w.message) for w in caught))
 
 
 if __name__ == "__main__":
