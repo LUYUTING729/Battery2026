@@ -1,5 +1,6 @@
 """Visualization helpers."""
 
+from .convergence_plot import export_convergence_plots
 from .solution_plot import (
     export_solution_plots,
     infer_excel_context,
@@ -9,6 +10,7 @@ from .solution_plot import (
 )
 
 __all__ = [
+    "export_convergence_plots",
     "export_solution_plots",
     "infer_excel_context",
     "infer_excel_path",

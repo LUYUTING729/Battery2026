@@ -1,0 +1,5 @@
+instance_id,node_id,depth,update_reason,old_ub,new_ub,improvement,global_time_sec,route_count
+data2_case_local,0,0,restricted_master_iter,inf,116.61361246187705,inf,1.0355358123779297,4
+data2_case_local,0,0,restricted_master_iter,116.61361246187705,110.19103042062804,6.422582041249015,10.81814694404602,5
+data2_case_local,0,0,restricted_master_iter,110.19103042062804,108.89474089400426,1.2962895266237808,68.20802092552185,4
+data2_case_local,0,0,restricted_master_iter,108.89474089400426,86.2346704886405,22.660070405363754,108.96548390388489,5

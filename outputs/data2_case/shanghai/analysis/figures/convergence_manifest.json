@@ -1,0 +1,13 @@
+{
+  "run_dir": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai",
+  "output_dir": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures",
+  "figures": {
+    "primal_dual_convergence": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures/primal_dual_convergence.png",
+    "optimality_gap": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures/optimality_gap.png",
+    "iteration_runtime": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures/iteration_runtime.png",
+    "bound_improvement_events": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures/bound_improvement_events.png",
+    "dashboard": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures/convergence_dashboard.png"
+  },
+  "summary_json": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures/convergence_summary.json",
+  "report_markdown": "/Users/lu/Desktop/MDVRP/outputs/data2_case/shanghai/analysis/figures/convergence_report.md"
+}
